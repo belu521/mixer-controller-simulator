@@ -33,6 +33,7 @@ class FaderSlider(QWidget):
         self._dragging = False
         self._drag_start_y = 0
         self._drag_start_value = 0
+        self._locked = False       # 锁定标志（校准动画期间锁定鼠标操作）
 
         # 电机归位动画
         self._anim_timer = QTimer(self)
@@ -168,6 +169,8 @@ class FaderSlider(QWidget):
 
     def mousePressEvent(self, event: QMouseEvent):
         """鼠标按下"""
+        if self._locked:
+            return
         if event.button() == Qt.MouseButton.LeftButton:
             self._anim_timer.stop()
             self._dragging = True

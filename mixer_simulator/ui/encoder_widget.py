@@ -43,8 +43,8 @@ class EncoderKnob(QWidget):
         self._click_timer.timeout.connect(self._on_click_timer)
         self._pending_click = False    # 是否有待定的单击
 
-        # 旋转加速 - 初始化为当前时间，避免第一次旋转被误判为慢速
-        self._last_rotate_time = time.monotonic()
+        # 旋转加速 - 初始化为过去1秒，确保第一次旋转被判定为慢速（正常步长）
+        self._last_rotate_time = time.monotonic() - 1.0
 
         # 模式颜色
         self._led_color = QColor(LED_CYAN)
@@ -107,7 +107,9 @@ class EncoderKnob(QWidget):
             if abs(self._drag_accumulated) >= self._drag_threshold:
                 self._dragging = True
                 steps_raw = self._drag_accumulated / self._drag_threshold
-                self._drag_accumulated = 0
+                # 保留余数（带符号），避免像素精度损失
+                sign = 1 if self._drag_accumulated >= 0 else -1
+                self._drag_accumulated = sign * (abs(self._drag_accumulated) % self._drag_threshold)
 
                 # 计算加速步长
                 step = self._calc_step(steps_raw)

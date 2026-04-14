@@ -29,9 +29,10 @@ _DEFAULT_CHANNEL_NAMES = [
 
 
 def _default_name(ch_num: int) -> str:
-    """根据通道号返回默认通道名称"""
-    idx = (ch_num - 1) % len(_DEFAULT_CHANNEL_NAMES)
-    return _DEFAULT_CHANNEL_NAMES[idx]
+    """根据通道号返回默认通道名称（超出预设列表则使用通道号）"""
+    if 1 <= ch_num <= len(_DEFAULT_CHANNEL_NAMES):
+        return _DEFAULT_CHANNEL_NAMES[ch_num - 1]
+    return f"CH{ch_num}"
 
 
 class ChannelState:
@@ -222,7 +223,13 @@ class MixerController(QObject):
     # ------------------------------------------------------------------ #
 
     def on_mute_clicked(self, strip_id: int):
-        """MUTE 按钮点击（切换）"""
+        """MUTE 按钮点击（切换）
+        
+        注：MIDI Note编号 = NOTE_MUTE_BASE + (ch_num - 1)，
+        对于超过127的值取模128（MIDI标准限制为0~127）。
+        在DM3（32ch）范围内无冲突；DM7高通道存在理论重叠，
+        但实际控制中依赖SysEx扩展而非Note映射。
+        """
         ch_state = self._get_strip_channel_state(strip_id)
         ch_state.mute_active = not ch_state.mute_active
         note = (NOTE_MUTE_BASE + ch_state.ch_num - 1) % 128

@@ -193,7 +193,7 @@ class LcdWidget(QWidget):
 
     def _render_calibrating(self):
         """推子校准进度显示"""
-        self._set_row(0, f">> CH{self._cal_target_ch}")
+        self._set_row(0, f"▶ CH{self._cal_target_ch}")
         self._set_row(1, self._cal_ch_name[:13])
         self._set_row(2, "推子校准中...")
         # 进度条：8格

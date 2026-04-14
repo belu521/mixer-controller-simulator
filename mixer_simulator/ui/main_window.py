@@ -1,394 +1,315 @@
-# ui/main_window.py
-# 主窗口 - 整体布局管理
+# mixer_simulator/ui/main_window.py
+# 主窗口 - Yamaha DM Series Controller Simulator v2.0
 
 from PyQt6.QtWidgets import (
     QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
-    QLabel, QComboBox, QPushButton, QTextEdit,
-    QStatusBar, QSizePolicy, QFrame, QScrollArea
+    QLabel, QPushButton, QComboBox, QTextEdit,
+    QFrame, QScrollArea, QSizePolicy, QStatusBar
 )
 from PyQt6.QtCore import Qt, QTimer
-from PyQt6.QtGui import QFont, QIcon
+from PyQt6.QtGui import QFont
 
-from .style import (
+from mixer_simulator.ui.channel_strip import ChannelStrip
+from mixer_simulator.ui.style import (
     GLOBAL_STYLESHEET, BG_DARK, BG_PANEL, TEXT_PRIMARY,
-    TEXT_SECONDARY, TEXT_LABEL, BORDER_COLOR
+    TEXT_SECONDARY, BORDER_COLOR, LED_GREEN, TEXT_LABEL
 )
-from .channel_strip import ChannelStrip
-from ..core.controller import MixerController
-from ..midi.midi_engine import MidiEngine
+from mixer_simulator.core.controller import MixerController, ENCODER_MODES
+from mixer_simulator.midi.midi_engine import MidiEngine
 
 
 class MainWindow(QMainWindow):
-    """混音控制器模拟器主窗口
-    
-    布局（从上到下）：
-      标题栏
-      5个通道条（横向排列）
-      MIDI控制栏
-      MIDI消息日志
-      状态栏
-    """
-
-    NUM_CHANNELS = 5
-    MAX_LOG_LINES = 50  # 最多显示50条MIDI日志
+    """主窗口"""
 
     def __init__(self):
         super().__init__()
-        # 初始化核心组件
-        self._controller = MixerController(self)
-        self._midi_engine = MidiEngine(self)
-        self._controller.set_midi_engine(self._midi_engine)
+        self.setWindowTitle("Yamaha DM Series Controller Simulator v2.0")
+        self.setMinimumSize(900, 1000)
 
-        self._setup_window()
-        self._setup_ui()
-        self._connect_signals()
-
-        # 初始化状态
-        self._refresh_midi_ports()
-        self._update_status("就绪 - 未连接MIDI")
-
-    def _setup_window(self):
-        """设置窗口属性"""
-        self.setWindowTitle("混音控制器模拟器 v1.0 | Mixer Controller Simulator")
-        self.setMinimumSize(800, 900)
-        self.resize(920, 1020)
+        # 应用全局样式
         self.setStyleSheet(GLOBAL_STYLESHEET)
 
+        # 初始化控制器和MIDI引擎
+        self._controller = MixerController(self)
+        self._midi_engine = MidiEngine()
+        self._controller.midi_engine = self._midi_engine
+
+        # MIDI日志列表
+        self._midi_log: list[str] = []
+
+        self._setup_ui()
+        self._connect_signals()
+        self._init_strips()
+
+    # ------------------------------------------------------------------ #
+    # 构建界面
+    # ------------------------------------------------------------------ #
+
     def _setup_ui(self):
-        """搭建主界面"""
-        central_widget = QWidget()
-        self.setCentralWidget(central_widget)
+        central = QWidget(self)
+        self.setCentralWidget(central)
+        root_layout = QVBoxLayout(central)
+        root_layout.setContentsMargins(8, 8, 8, 8)
+        root_layout.setSpacing(6)
 
-        root_layout = QVBoxLayout(central_widget)
-        root_layout.setContentsMargins(10, 8, 10, 8)
-        root_layout.setSpacing(8)
+        # 顶部工具栏
+        root_layout.addWidget(self._build_toolbar())
 
-        # ---- 标题区域 ----
-        title_bar = self._build_title_bar()
-        root_layout.addWidget(title_bar)
+        # 分割线
+        root_layout.addWidget(self._make_separator())
 
-        # ---- 通道条区域（5列） ----
-        channels_widget = QWidget()
-        channels_layout = QHBoxLayout(channels_widget)
-        channels_layout.setContentsMargins(0, 0, 0, 0)
-        channels_layout.setSpacing(6)
+        # 推子条区域
+        strips_scroll = QScrollArea(self)
+        strips_scroll.setWidgetResizable(True)
+        strips_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        strips_scroll.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        strips_scroll.setStyleSheet(
+            f"QScrollArea {{ border: none; background-color: {BG_DARK}; }}"
+        )
 
-        self.channel_strips: list[ChannelStrip] = []
-        for ch_id in range(self.NUM_CHANNELS):
-            strip = ChannelStrip(ch_id, self)
-            self.channel_strips.append(strip)
-            channels_layout.addWidget(strip)
+        strips_container = QWidget()
+        strips_layout = QHBoxLayout(strips_container)
+        strips_layout.setContentsMargins(4, 4, 4, 4)
+        strips_layout.setSpacing(6)
 
-        root_layout.addWidget(channels_widget, stretch=1)
+        self._strips: list[ChannelStrip] = []
+        for i in range(5):
+            strip = ChannelStrip(i, strips_container)
+            strips_layout.addWidget(strip)
+            self._strips.append(strip)
 
-        # ---- MIDI控制栏 ----
-        midi_bar = self._build_midi_bar()
-        root_layout.addWidget(midi_bar)
+        strips_layout.addStretch(1)
+        strips_scroll.setWidget(strips_container)
+        strips_scroll.setMinimumHeight(700)
+        root_layout.addWidget(strips_scroll, stretch=1)
 
-        # ---- MIDI消息日志 ----
-        log_area = self._build_log_area()
-        root_layout.addWidget(log_area)
+        # 分割线
+        root_layout.addWidget(self._make_separator())
 
-        # ---- 状态栏 ----
-        self._status_bar = QStatusBar()
-        self._status_bar.setStyleSheet(f"""
-            QStatusBar {{
-                background-color: {BG_PANEL};
-                color: {TEXT_SECONDARY};
-                font-size: 10px;
-                border-top: 1px solid {BORDER_COLOR};
-                padding: 2px 8px;
-            }}
-        """)
+        # MIDI日志区
+        root_layout.addWidget(self._build_midi_log())
+
+        # 状态栏
+        self._status_bar = QStatusBar(self)
         self.setStatusBar(self._status_bar)
+        self._update_status_bar()
 
-    def _build_title_bar(self) -> QWidget:
-        """构建标题栏"""
-        widget = QWidget()
-        widget.setStyleSheet(f"""
-            QWidget {{
-                background-color: {BG_PANEL};
-                border-radius: 4px;
-                border: 1px solid {BORDER_COLOR};
-            }}
-        """)
-        layout = QHBoxLayout(widget)
-        layout.setContentsMargins(12, 8, 12, 8)
+    def _build_toolbar(self) -> QWidget:
+        """构建顶部工具栏"""
+        toolbar = QWidget(self)
+        toolbar.setStyleSheet(f"background-color: {BG_PANEL}; border-radius: 4px;")
+        layout = QHBoxLayout(toolbar)
+        layout.setContentsMargins(8, 6, 8, 6)
+        layout.setSpacing(10)
 
-        # 左侧：标题
-        title = QLabel("🎛 混音控制器模拟器")
-        title.setStyleSheet(f"""
-            color: {TEXT_PRIMARY};
-            font-size: 14px;
-            font-weight: bold;
-            background: transparent;
-            border: none;
-        """)
+        # 标题
+        title = QLabel("Yamaha DM Series Controller Simulator  v2.0", toolbar)
+        title.setStyleSheet(
+            f"color: {TEXT_PRIMARY}; font-size: 13px; font-weight: bold;"
+        )
         layout.addWidget(title)
+        layout.addStretch(1)
 
-        layout.addStretch()
-
-        # 右侧：PCB信息
-        info = QLabel("5CH | 25×WS2812B | 5×EC11 | RSA0N11M9A0J×5")
-        info.setStyleSheet(f"color: {TEXT_LABEL}; font-size: 10px; background: transparent; border: none;")
-        layout.addWidget(info)
-
-        return widget
-
-    def _build_midi_bar(self) -> QWidget:
-        """构建MIDI控制栏"""
-        widget = QFrame()
-        widget.setFrameShape(QFrame.Shape.StyledPanel)
-        widget.setStyleSheet(f"""
-            QFrame {{
-                background-color: {BG_PANEL};
-                border: 1px solid {BORDER_COLOR};
-                border-radius: 4px;
-            }}
-        """)
-        layout = QHBoxLayout(widget)
-        layout.setContentsMargins(10, 6, 10, 6)
-        layout.setSpacing(8)
-
-        # MIDI端口标签
-        port_label = QLabel("MIDI 输出端口：")
-        port_label.setStyleSheet(f"color: {TEXT_LABEL}; font-size: 11px; background: transparent; border: none;")
+        # MIDI端口选择
+        port_label = QLabel("MIDI端口:", toolbar)
+        port_label.setStyleSheet(f"color: {TEXT_SECONDARY}; font-size: 11px;")
         layout.addWidget(port_label)
 
-        # 端口选择下拉框
-        self.port_combo = QComboBox()
-        self.port_combo.setMinimumWidth(200)
-        self.port_combo.setStyleSheet(f"""
-            QComboBox {{
-                background-color: #333333;
-                color: {TEXT_PRIMARY};
-                border: 1px solid {BORDER_COLOR};
-                border-radius: 3px;
-                padding: 3px 6px;
-                font-size: 11px;
-            }}
-            QComboBox::drop-down {{
-                border: none;
-                width: 18px;
-            }}
-            QComboBox QAbstractItemView {{
-                background-color: #333333;
-                color: {TEXT_PRIMARY};
-                selection-background-color: #4a4a4a;
-                border: 1px solid {BORDER_COLOR};
-            }}
-        """)
-        layout.addWidget(self.port_combo)
+        self._port_combo = QComboBox(toolbar)
+        self._refresh_ports()
+        layout.addWidget(self._port_combo)
 
-        # 刷新按钮
-        self.refresh_btn = QPushButton("🔄 刷新")
-        self.refresh_btn.setFixedWidth(70)
-        self.refresh_btn.clicked.connect(self._refresh_midi_ports)
-        layout.addWidget(self.refresh_btn)
+        # 刷新端口按钮
+        refresh_btn = QPushButton("刷新", toolbar)
+        refresh_btn.setFixedWidth(50)
+        refresh_btn.clicked.connect(self._refresh_ports)
+        layout.addWidget(refresh_btn)
 
         # 连接/断开按钮
-        self.connect_btn = QPushButton("▶ 连接")
-        self.connect_btn.setFixedWidth(80)
-        self.connect_btn.clicked.connect(self._toggle_midi_connection)
-        layout.addWidget(self.connect_btn)
+        self._connect_btn = QPushButton("连接", toolbar)
+        self._connect_btn.setFixedWidth(60)
+        self._connect_btn.clicked.connect(self._toggle_midi_connection)
+        layout.addWidget(self._connect_btn)
 
-        # 状态指示灯
-        self.midi_status_led = QLabel("●")
-        self.midi_status_led.setStyleSheet("color: #ff4444; font-size: 14px; background: transparent; border: none;")
-        layout.addWidget(self.midi_status_led)
+        # 连接状态指示
+        self._conn_label = QLabel("●  未连接", toolbar)
+        self._conn_label.setStyleSheet(f"color: {TEXT_SECONDARY}; font-size: 11px;")
+        layout.addWidget(self._conn_label)
 
-        self.midi_status_label = QLabel("未连接")
-        self.midi_status_label.setStyleSheet(f"color: {TEXT_LABEL}; font-size: 10px; background: transparent; border: none;")
-        layout.addWidget(self.midi_status_label)
+        return toolbar
 
-        layout.addStretch()
-
-        # 全部归位按钮
-        reset_btn = QPushButton("⏮ 全部归位 (0dB)")
-        reset_btn.setFixedWidth(130)
-        reset_btn.setToolTip("将所有推子归位到0dB位置 (MIDI=100)")
-        reset_btn.clicked.connect(self._reset_all_faders)
-        layout.addWidget(reset_btn)
-
-        return widget
-
-    def _build_log_area(self) -> QWidget:
-        """构建MIDI消息日志区域"""
-        widget = QFrame()
-        widget.setFrameShape(QFrame.Shape.StyledPanel)
-        widget.setStyleSheet(f"""
-            QFrame {{
-                background-color: {BG_PANEL};
-                border: 1px solid {BORDER_COLOR};
-                border-radius: 4px;
-            }}
-        """)
-        widget.setFixedHeight(130)
-
-        layout = QVBoxLayout(widget)
-        layout.setContentsMargins(8, 6, 8, 6)
+    def _build_midi_log(self) -> QWidget:
+        """构建MIDI日志区域"""
+        frame = QWidget(self)
+        layout = QVBoxLayout(frame)
+        layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(4)
 
-        # 日志标题
         header = QHBoxLayout()
-        log_title = QLabel("MIDI 消息日志（最近50条）")
-        log_title.setStyleSheet(f"color: {TEXT_LABEL}; font-size: 10px; background: transparent; border: none;")
-        header.addWidget(log_title)
-        header.addStretch()
-
-        clear_btn = QPushButton("清空")
-        clear_btn.setFixedSize(50, 20)
-        clear_btn.setStyleSheet(f"""
-            QPushButton {{
-                background-color: #333333;
-                color: {TEXT_LABEL};
-                border: 1px solid {BORDER_COLOR};
-                border-radius: 3px;
-                font-size: 10px;
-                padding: 1px;
-            }}
-            QPushButton:hover {{
-                color: {TEXT_PRIMARY};
-            }}
-        """)
-        clear_btn.clicked.connect(self._clear_log)
+        lbl = QLabel("MIDI 消息日志", frame)
+        lbl.setStyleSheet(f"color: {TEXT_SECONDARY}; font-size: 10px;")
+        header.addWidget(lbl)
+        header.addStretch(1)
+        clear_btn = QPushButton("清空", frame)
+        clear_btn.setFixedSize(40, 20)
+        clear_btn.clicked.connect(self._clear_midi_log)
         header.addWidget(clear_btn)
         layout.addLayout(header)
 
-        # 日志文本区域
-        self.log_text = QTextEdit()
-        self.log_text.setReadOnly(True)
-        self.log_text.setFont(QFont("Consolas", 9))
-        self.log_text.setStyleSheet(f"""
-            QTextEdit {{
-                background-color: #0d1117;
-                color: #00cc44;
-                border: none;
-                font-family: "Consolas", monospace;
-                font-size: 9pt;
-            }}
-        """)
-        layout.addWidget(self.log_text)
+        self._midi_log_widget = QTextEdit(frame)
+        self._midi_log_widget.setReadOnly(True)
+        self._midi_log_widget.setFixedHeight(100)
+        self._midi_log_widget.setVerticalScrollBarPolicy(
+            Qt.ScrollBarPolicy.ScrollBarAsNeeded
+        )
+        layout.addWidget(self._midi_log_widget)
 
-        return widget
+        return frame
+
+    def _make_separator(self) -> QFrame:
+        line = QFrame(self)
+        line.setFrameShape(QFrame.Shape.HLine)
+        line.setStyleSheet(f"color: {BORDER_COLOR};")
+        return line
+
+    # ------------------------------------------------------------------ #
+    # 连接信号
+    # ------------------------------------------------------------------ #
 
     def _connect_signals(self):
-        """连接信号"""
-        ctrl = self._controller
+        """将推子条信号连接到控制器"""
+        for strip in self._strips:
+            sid = strip.strip_id
+            strip.fader_moved.connect(self._controller.on_fader_moved)
+            strip.encoder_rotated.connect(self._on_encoder_rotated)
+            strip.encoder_single_clicked.connect(self._controller.on_encoder_clicked)
+            strip.encoder_double_clicked.connect(self._controller.on_encoder_double_clicked)
+            strip.mute_clicked.connect(self._controller.on_mute_clicked)
+            strip.solo_clicked.connect(self._controller.on_solo_clicked)
+            strip.select_clicked.connect(self._controller.on_select_clicked)
+            strip.dyn_clicked.connect(self._controller.on_dyn_clicked)
 
-        # 连接各通道条信号到控制器
-        for strip in self.channel_strips:
-            ch = strip.channel_id
-            strip.fader_moved.connect(ctrl.on_fader_moved)
-            strip.encoder_rotated.connect(ctrl.on_encoder_rotated)
-            strip.encoder_clicked.connect(ctrl.on_encoder_clicked)
-            strip.mute_clicked.connect(ctrl.on_mute_clicked)
-            strip.solo_clicked.connect(ctrl.on_solo_clicked)
-            strip.rec_clicked.connect(ctrl.on_rec_clicked)
-            strip.sel_clicked.connect(ctrl.on_sel_clicked)
+        # 控制器 → UI更新
+        self._controller.fader_changed.connect(self._on_fader_changed)
+        self._controller.encoder_changed.connect(self._on_encoder_changed)
+        self._controller.encoder_mode_changed.connect(self._on_encoder_mode_changed)
+        self._controller.button_changed.connect(self._on_button_changed)
+        self._controller.channel_switched.connect(self._on_channel_switched)
+        self._controller.page_turn_mode_changed.connect(self._on_page_turn_changed)
+        self._controller.midi_message_sent.connect(self._on_midi_message)
+        self._controller.channel_assignment_changed.connect(self._update_status_bar)
 
-        # 控制器信号 → 更新UI
-        ctrl.fader_changed.connect(self._on_fader_changed)
-        ctrl.encoder_changed.connect(self._on_encoder_changed)
-        ctrl.encoder_mode_changed.connect(self._on_encoder_mode_changed)
-        ctrl.button_changed.connect(self._on_button_changed)
-        ctrl.midi_message_sent.connect(self._append_log)
+    # ------------------------------------------------------------------ #
+    # 初始化推子条显示
+    # ------------------------------------------------------------------ #
 
-        # MIDI引擎信号
-        self._midi_engine.connection_changed.connect(self._on_midi_connection_changed)
+    def _init_strips(self):
+        """用控制器状态初始化所有推子条"""
+        for i, strip in enumerate(self._strips):
+            s = self._controller.get_strip_state(i)
+            ch = self._controller.get_channel_state(s.current_channel)
+            strip.update_from_channel_state(ch)
 
-    def _on_fader_changed(self, channel_id: int, midi_value: int):
-        """推子值变化 → 更新LCD dB显示"""
-        ch_state = self._controller.channels[channel_id]
-        self.channel_strips[channel_id].update_fader_db(ch_state.fader_db)
+    # ------------------------------------------------------------------ #
+    # 槽函数：来自控制器的信号
+    # ------------------------------------------------------------------ #
 
-    def _on_encoder_changed(self, channel_id: int, midi_value: int):
-        """编码器值变化 → 更新显示"""
-        self.channel_strips[channel_id].update_encoder_value(midi_value)
+    def _on_encoder_rotated(self, strip_id: int, delta: float):
+        """将编码器旋转的float delta传递给控制器"""
+        self._controller.on_encoder_rotated(strip_id, delta)
 
-    def _on_encoder_mode_changed(self, channel_id: int, mode: str):
-        """编码器模式变化 → 更新通道条"""
-        self.channel_strips[channel_id].update_encoder_mode(mode)
+    def _on_fader_changed(self, strip_id: int, value: int):
+        """推子值变化时更新LCD"""
+        from mixer_simulator.ui.fader_widget import midi_to_db
+        self._strips[strip_id]._lcd.set_fader_db(midi_to_db(value))
 
-    def _on_button_changed(self, channel_id: int, btn_type: str, state: bool):
-        """按键状态变化 → 更新通道条"""
-        self.channel_strips[channel_id].update_button_state(btn_type, state)
+    def _on_encoder_changed(self, strip_id: int, val_str: str):
+        """编码器参数变化时更新LCD"""
+        s = self._controller.get_strip_state(strip_id)
+        ch = self._controller.get_channel_state(s.current_channel)
+        mode_name = ENCODER_MODES[ch.encoder_mode_index]
+        self._strips[strip_id].update_encoder_display(mode_name, val_str)
 
-    def _append_log(self, message: str):
-        """追加MIDI消息日志"""
-        from PyQt6.QtCore import QDateTime
-        timestamp = QDateTime.currentDateTime().toString("hh:mm:ss.zzz")
-        line = f"[{timestamp}] {message}"
-        self.log_text.append(line)
+    def _on_encoder_mode_changed(self, strip_id: int, mode_name: str):
+        """编码器模式切换时更新LCD和编码器颜色"""
+        s = self._controller.get_strip_state(strip_id)
+        ch = self._controller.get_channel_state(s.current_channel)
+        val_str = self._strips[strip_id]._get_encoder_value_str(ch)
+        self._strips[strip_id].update_encoder_display(mode_name, val_str)
 
-        # 限制行数
-        doc = self.log_text.document()
-        while doc.blockCount() > self.MAX_LOG_LINES:
-            cursor = self.log_text.textCursor()
-            cursor.movePosition(cursor.MoveOperation.Start)
-            cursor.select(cursor.SelectionType.BlockUnderCursor)
-            cursor.removeSelectedText()
-            cursor.deleteChar()
+    def _on_button_changed(self, strip_id: int, btn_type: str, state: bool):
+        """按钮状态变化时更新UI"""
+        self._strips[strip_id].update_button_state(btn_type, state)
 
-        # 自动滚动到底部
-        scrollbar = self.log_text.verticalScrollBar()
-        scrollbar.setValue(scrollbar.maximum())
+    def _on_channel_switched(self, strip_id: int, old_ch: int, new_ch: int):
+        """通道切换 - 开始推子校准动画"""
+        ch = self._controller.get_channel_state(new_ch)
+        self._strips[strip_id].start_channel_calibration(
+            ch.fader_value, new_ch, ch.channel_name
+        )
+        # 校准完成后恢复完整UI状态
+        def on_complete():
+            self._strips[strip_id].update_from_channel_state(ch)
+        self._strips[strip_id]._fader.calibration_complete.connect(on_complete)
 
-    def _clear_log(self):
-        """清空日志"""
-        self.log_text.clear()
+    def _on_page_turn_changed(self, strip_id: int, is_page_turn: bool, target_ch: int):
+        """翻页模式变化"""
+        self._strips[strip_id].set_page_turn_mode(is_page_turn, target_ch)
 
-    # ----------------------------------------------------------------
+    def _on_midi_message(self, msg: str):
+        """记录MIDI消息到日志"""
+        self._midi_log.append(msg)
+        if len(self._midi_log) > 100:
+            self._midi_log = self._midi_log[-100:]
+        # 只显示最近10条
+        display = "\n".join(self._midi_log[-10:])
+        self._midi_log_widget.setPlainText(display)
+        # 滚动到底部
+        sb = self._midi_log_widget.verticalScrollBar()
+        sb.setValue(sb.maximum())
+
+    # ------------------------------------------------------------------ #
     # MIDI端口管理
-    # ----------------------------------------------------------------
+    # ------------------------------------------------------------------ #
 
-    def _refresh_midi_ports(self):
+    def _refresh_ports(self):
         """刷新MIDI端口列表"""
-        current = self.port_combo.currentText()
-        self.port_combo.clear()
-        ports = self._midi_engine.get_available_ports()
-        self.port_combo.addItems(ports)
-        # 恢复之前选中的端口
-        idx = self.port_combo.findText(current)
-        if idx >= 0:
-            self.port_combo.setCurrentIndex(idx)
+        self._port_combo.clear()
+        ports = self._midi_engine.get_ports()
+        if ports:
+            self._port_combo.addItems(ports)
+        else:
+            self._port_combo.addItem("（无可用端口）")
 
     def _toggle_midi_connection(self):
-        """切换MIDI连接状态"""
+        """连接/断开MIDI端口"""
         if self._midi_engine.is_connected:
             self._midi_engine.disconnect()
+            self._connect_btn.setText("连接")
+            self._conn_label.setText("●  未连接")
+            self._conn_label.setStyleSheet(f"color: {TEXT_SECONDARY}; font-size: 11px;")
         else:
-            port = self.port_combo.currentText()
-            self._midi_engine.connect(port)
+            port = self._port_combo.currentText()
+            if port and port != "（无可用端口）":
+                ok = self._midi_engine.connect(port)
+                if ok:
+                    self._connect_btn.setText("断开")
+                    self._conn_label.setText(f"●  {port}")
+                    self._conn_label.setStyleSheet(
+                        f"color: {LED_GREEN}; font-size: 11px;"
+                    )
 
-    def _on_midi_connection_changed(self, connected: bool, port_name: str):
-        """MIDI连接状态变化"""
-        if connected:
-            self.connect_btn.setText("■ 断开")
-            self.midi_status_led.setStyleSheet("color: #44ff44; font-size: 14px; background: transparent; border: none;")
-            self.midi_status_label.setText(f"已连接: {port_name}")
-            self._update_status(f"MIDI已连接: {port_name}")
-            self._append_log(f">>> MIDI连接成功: {port_name}")
-        else:
-            self.connect_btn.setText("▶ 连接")
-            self.midi_status_led.setStyleSheet("color: #ff4444; font-size: 14px; background: transparent; border: none;")
-            self.midi_status_label.setText("未连接")
-            self._update_status("MIDI已断开")
+    def _clear_midi_log(self):
+        """清空MIDI日志"""
+        self._midi_log.clear()
+        self._midi_log_widget.clear()
 
-    def _update_status(self, message: str):
-        """更新状态栏"""
-        self._status_bar.showMessage(message)
+    # ------------------------------------------------------------------ #
+    # 状态栏
+    # ------------------------------------------------------------------ #
 
-    # ----------------------------------------------------------------
-    # 全局控制
-    # ----------------------------------------------------------------
-
-    def _reset_all_faders(self):
-        """将所有推子归位到0dB (MIDI=100)"""
-        for strip in self.channel_strips:
-            strip.fader.slider._start_animation(100)
-
-    def closeEvent(self, event):
-        """窗口关闭时断开MIDI"""
-        self._midi_engine.disconnect()
-        super().closeEvent(event)
+    def _update_status_bar(self):
+        """更新状态栏的通道分配概览"""
+        channels = self._controller.get_all_strip_channels()
+        parts = [f"列{i+1}:CH{ch}" for i, ch in enumerate(channels)]
+        self._status_bar.showMessage(" | ".join(parts))

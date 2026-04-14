@@ -1,267 +1,207 @@
-# ui/fader_widget.py
-# 推子控件 - 模拟RSA0N11M9A0J 100mm电动推子
+# mixer_simulator/ui/fader_widget.py
+# 推子部件 - 垂直推子 + 校准动画支持
 
-from PyQt6.QtWidgets import QWidget, QVBoxLayout, QHBoxLayout, QLabel, QSizePolicy
-from PyQt6.QtCore import Qt, pyqtSignal, QTimer, QPoint, QRect, QSize
-from PyQt6.QtGui import (
-    QPainter, QColor, QPen, QBrush, QLinearGradient,
-    QMouseEvent, QWheelEvent, QFont
+from PyQt6.QtWidgets import (
+    QWidget, QVBoxLayout, QHBoxLayout, QLabel, QSlider, QSizePolicy
+)
+from PyQt6.QtCore import Qt, QTimer, pyqtSignal
+from PyQt6.QtGui import QPainter, QColor, QPen, QBrush, QFont
+
+from mixer_simulator.ui.style import (
+    FADER_TRACK, FADER_THUMB, BG_CHANNEL, TEXT_LABEL, TEXT_SECONDARY
 )
 
-from .style import FADER_TRACK, FADER_THUMB, BG_PANEL, TEXT_LABEL, BORDER_COLOR
-from ..core.controller import midi_to_db
+# 推子校准动画步进定时器间隔（ms）
+CALIBRATION_STEP_MS = 50
+# 每步最大移动量（MIDI值单位）
+CALIBRATION_MAX_STEP = 3
+
+
+def midi_to_db(midi_val: int) -> str:
+    """将MIDI值（0~127）转换为dB字符串"""
+    if midi_val == 0:
+        return "-∞dB"
+    # 简单线性映射：127→0dB, 100→-10dB, 0→-∞
+    db = (midi_val - 100) * 0.5
+    return f"{db:+.1f}dB" if midi_val != 100 else "0.0dB"
 
 
 class FaderSlider(QWidget):
-    """推子滑动条绘制控件（垂直）
-    
-    - 鼠标拖动改变值
-    - 双击归位到100（0dB）
-    - 右键归位到127（最大值）
-    - 滚轮微调
-    """
+    """自定义垂直推子滑块"""
 
-    value_changed = pyqtSignal(int)  # 值变化信号 (midi_value 0-127)
-
-    TRACK_WIDTH = 8       # 轨道宽度
-    THUMB_WIDTH = 34      # 推子手柄宽度
-    THUMB_HEIGHT = 16     # 推子手柄高度
+    value_changed = pyqtSignal(int)          # 推子值变化（0~127）
+    calibration_progress = pyqtSignal(int)   # 校准进度（0~100%）
+    calibration_complete = pyqtSignal()      # 校准完成
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        self._value = 100          # 当前MIDI值 (0-127)
+        self.setFixedSize(36, 200)
+
+        self._value = 100         # 当前推子值（0~127）
+        self._locked = False      # 是否处于锁定状态（校准中）
         self._dragging = False
         self._drag_start_y = 0
-        self._drag_start_value = 0
+        self._drag_start_val = 0
 
-        # 电机归位动画
-        self._anim_timer = QTimer(self)
-        self._anim_timer.setInterval(16)  # ~60fps
-        self._anim_timer.timeout.connect(self._anim_step)
-        self._anim_target = 0
+        # 校准动画
+        self._cal_target = 100
+        self._cal_timer = QTimer(self)
+        self._cal_timer.timeout.connect(self._calibration_step)
 
-        self.setMinimumSize(50, 200)
-        self.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Expanding)
-        self.setFixedWidth(50)
         self.setCursor(Qt.CursorShape.SizeVerCursor)
-        self.setToolTip("拖动调节 | 双击归位0dB(MIDI=100) | 右键归位最大(MIDI=127) | 滚轮微调")
 
     @property
     def value(self) -> int:
-        """当前MIDI值"""
         return self._value
 
-    def _value_to_y(self, value: int) -> int:
-        """将MIDI值转换为Y坐标（像素）"""
-        h = self.height()
-        thumb_half = self.THUMB_HEIGHT // 2
-        usable_h = h - 2 * thumb_half
-        # 值127=顶部（小Y），值0=底部（大Y）
-        return thumb_half + int((1.0 - value / 127.0) * usable_h)
+    def set_value(self, val: int, emit: bool = True):
+        """设置推子值（不触发动画）"""
+        self._value = max(0, min(127, val))
+        if emit:
+            self.value_changed.emit(self._value)
+        self.update()
 
-    def _y_to_value(self, y: int) -> int:
-        """将Y坐标转换为MIDI值"""
-        h = self.height()
-        thumb_half = self.THUMB_HEIGHT // 2
-        usable_h = h - 2 * thumb_half
-        if usable_h <= 0:
-            return 0
-        ratio = 1.0 - (y - thumb_half) / usable_h
-        return max(0, min(127, int(ratio * 127)))
+    def start_calibration(self, target: int):
+        """开始推子校准动画，平滑移动到目标值"""
+        self._locked = True
+        self._cal_target = max(0, min(127, target))
+        self._cal_timer.start(CALIBRATION_STEP_MS)
 
-    def set_value(self, value: int, emit_signal: bool = True):
-        """设置推子值"""
-        value = max(0, min(127, value))
-        if value != self._value:
-            self._value = value
-            self.update()
-            if emit_signal:
-                self.value_changed.emit(value)
-
-    def _start_animation(self, target: int):
-        """启动电机归位动画"""
-        self._anim_target = target
-        if not self._anim_timer.isActive():
-            self._anim_timer.start()
-
-    def _anim_step(self):
-        """动画步进"""
-        diff = self._anim_target - self._value
-        if abs(diff) <= 2:
-            self.set_value(self._anim_target)
-            self._anim_timer.stop()
+    def _calibration_step(self):
+        """校准动画步进"""
+        diff = self._cal_target - self._value
+        if abs(diff) <= CALIBRATION_MAX_STEP:
+            self._value = self._cal_target
+            self._cal_timer.stop()
+            self._locked = False
+            self.calibration_complete.emit()
+            self.calibration_progress.emit(100)
         else:
-            # 缓动效果
-            step = max(1, abs(diff) // 4)
-            new_val = self._value + (step if diff > 0 else -step)
-            self.set_value(new_val)
+            step = CALIBRATION_MAX_STEP if diff > 0 else -CALIBRATION_MAX_STEP
+            self._value += step
+            # 计算进度
+            total = abs(self._cal_target - (self._value - step))
+            done = abs(self._value - (self._value - step))
+            if total > 0:
+                pct = int(100 - abs(self._cal_target - self._value) / total * 100)
+            else:
+                pct = 100
+            self.calibration_progress.emit(max(0, min(100, pct)))
+        self.update()
+
+    # ------------------------------------------------------------------ #
+    # 绘制
+    # ------------------------------------------------------------------ #
+
+    def _value_to_y(self, val: int) -> int:
+        """将推子值映射到Y坐标（值越大越靠上）"""
+        h = self.height()
+        margin = 14  # 顶部/底部留白
+        return int(h - margin - (val / 127) * (h - margin * 2))
 
     def paintEvent(self, event):
-        """绘制推子"""
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
 
-        w = self.width()
-        h = self.height()
+        w, h = self.width(), self.height()
         cx = w // 2
-        thumb_y = self._value_to_y(self._value)
-        thumb_half = self.THUMB_HEIGHT // 2
 
-        # ---- 绘制轨道 ----
-        track_x = cx - self.TRACK_WIDTH // 2
-        track_top = thumb_half
-        track_bottom = h - thumb_half
-
-        # 轨道背景
-        painter.setPen(Qt.PenStyle.NoPen)
+        # 轨道
+        track_w = 6
+        margin = 14
         painter.setBrush(QBrush(QColor(FADER_TRACK)))
-        painter.drawRoundedRect(track_x, track_top,
-                                self.TRACK_WIDTH, track_bottom - track_top,
-                                3, 3)
+        painter.setPen(Qt.PenStyle.NoPen)
+        painter.drawRoundedRect(cx - track_w // 2, margin, track_w, h - margin * 2, 3, 3)
 
-        # 轨道填充（当前位置以下）- 蓝色高亮
-        fill_top = thumb_y
-        fill_height = track_bottom - thumb_y
-        if fill_height > 0:
-            gradient = QLinearGradient(0, fill_top, 0, track_bottom)
-            gradient.setColorAt(0, QColor("#3399ff"))
-            gradient.setColorAt(1, QColor("#1166cc"))
-            painter.setBrush(QBrush(gradient))
-            painter.drawRoundedRect(track_x, fill_top,
-                                    self.TRACK_WIDTH, fill_height,
-                                    3, 3)
-
-        # 0dB刻度线（MIDI=100位置）
-        mark_y = self._value_to_y(100)
-        painter.setPen(QPen(QColor("#ff8800"), 1))
-        painter.drawLine(track_x - 4, mark_y, track_x + self.TRACK_WIDTH + 4, mark_y)
-
-        # ---- 绘制推子手柄 ----
-        thumb_x = cx - self.THUMB_WIDTH // 2
-        thumb_rect = QRect(thumb_x, thumb_y - thumb_half,
-                           self.THUMB_WIDTH, self.THUMB_HEIGHT)
-
-        # 手柄渐变
-        gradient = QLinearGradient(thumb_x, thumb_y - thumb_half,
-                                   thumb_x, thumb_y + thumb_half)
-        gradient.setColorAt(0, QColor("#d0d0d0"))
-        gradient.setColorAt(0.4, QColor(FADER_THUMB))
-        gradient.setColorAt(0.6, QColor(FADER_THUMB))
-        gradient.setColorAt(1, QColor("#888888"))
-        painter.setBrush(QBrush(gradient))
-        painter.setPen(QPen(QColor("#666666"), 1))
-        painter.drawRoundedRect(thumb_rect, 3, 3)
-
-        # 手柄中间刻度线
+        # 刻度线（9个：-∞,-30,-20,-15,-10,-5,0,+5,+10）
+        tick_values = [0, 20, 40, 55, 70, 85, 100, 112, 127]
         painter.setPen(QPen(QColor("#555555"), 1))
-        line_x1 = thumb_x + 5
-        line_x2 = thumb_x + self.THUMB_WIDTH - 5
-        for dy in [-2, 0, 2]:
-            painter.drawLine(line_x1, thumb_y + dy, line_x2, thumb_y + dy)
+        for tv in tick_values:
+            ty = self._value_to_y(tv)
+            painter.drawLine(cx - 10, ty, cx - track_w // 2 - 1, ty)
 
-        # ---- 刻度标记（左侧） ----
+        # 推子手柄
+        thumb_y = self._value_to_y(self._value)
+        thumb_h = 24
+        thumb_w = 26
+        thumb_color = QColor("#888888") if self._locked else QColor(FADER_THUMB)
+        painter.setBrush(QBrush(thumb_color))
         painter.setPen(QPen(QColor("#666666"), 1))
-        tick_x = track_x - 8
-        for tick_val in [127, 100, 75, 50, 25, 0]:
-            ty = self._value_to_y(tick_val)
-            painter.drawLine(tick_x, ty, tick_x + 4, ty)
+        painter.drawRoundedRect(
+            cx - thumb_w // 2, thumb_y - thumb_h // 2,
+            thumb_w, thumb_h, 4, 4
+        )
 
-    def mousePressEvent(self, event: QMouseEvent):
-        """鼠标按下"""
+        # 手柄中心线
+        painter.setPen(QPen(QColor("#444444"), 1))
+        painter.drawLine(
+            cx - thumb_w // 2 + 4, thumb_y,
+            cx + thumb_w // 2 - 4, thumb_y
+        )
+
+        painter.end()
+
+    # ------------------------------------------------------------------ #
+    # 鼠标交互
+    # ------------------------------------------------------------------ #
+
+    def mousePressEvent(self, event):
+        if self._locked:
+            return
         if event.button() == Qt.MouseButton.LeftButton:
-            self._anim_timer.stop()
             self._dragging = True
-            self._drag_start_y = event.pos().y()
-            self._drag_start_value = self._value
-            # 直接跳转到点击位置
-            self.set_value(self._y_to_value(event.pos().y()))
-        elif event.button() == Qt.MouseButton.RightButton:
-            # 右键 → 电机归位到127（最大值）
-            self._start_animation(127)
+            self._drag_start_y = event.position().y()
+            self._drag_start_val = self._value
 
-    def mouseMoveEvent(self, event: QMouseEvent):
-        """鼠标拖动"""
-        if self._dragging:
-            self.set_value(self._y_to_value(event.pos().y()))
+    def mouseMoveEvent(self, event):
+        if not self._dragging or self._locked:
+            return
+        h = self.height()
+        margin = 14
+        dy = self._drag_start_y - event.position().y()
+        delta_val = int(dy / (h - margin * 2) * 127)
+        new_val = max(0, min(127, self._drag_start_val + delta_val))
+        self._value = new_val
+        self.value_changed.emit(self._value)
+        self.update()
 
-    def mouseReleaseEvent(self, event: QMouseEvent):
-        """鼠标释放"""
-        if event.button() == Qt.MouseButton.LeftButton:
-            self._dragging = False
-
-    def mouseDoubleClickEvent(self, event: QMouseEvent):
-        """双击 → 电机归位到0dB（MIDI=100）"""
-        if event.button() == Qt.MouseButton.LeftButton:
-            self._start_animation(100)
-
-    def wheelEvent(self, event: QWheelEvent):
-        """滚轮微调"""
-        delta = 1 if event.angleDelta().y() > 0 else -1
-        self.set_value(self._value + delta)
+    def mouseReleaseEvent(self, event):
+        self._dragging = False
 
 
 class FaderWidget(QWidget):
-    """推子控件 - 包含推子滑块 + 值显示标签
-    
-    布局（从上到下）：
-      MIDI值标签
-      [推子滑块]
-      dB值标签
-      通道标签
-    """
+    """推子部件 = 滑块 + 标签"""
 
-    value_changed = pyqtSignal(int)  # 值变化信号
+    value_changed = pyqtSignal(int)
+    calibration_progress = pyqtSignal(int)
+    calibration_complete = pyqtSignal()
 
-    def __init__(self, channel_id: int, parent=None):
+    def __init__(self, parent=None):
         super().__init__(parent)
-        self.channel_id = channel_id
         self._setup_ui()
 
     def _setup_ui(self):
-        """初始化UI布局"""
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(4, 4, 4, 4)
-        layout.setSpacing(4)
-        layout.setAlignment(Qt.AlignmentFlag.AlignHCenter)
-
-        # MIDI值标签（顶部）
-        self.midi_label = QLabel("100")
-        self.midi_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.midi_label.setStyleSheet(f"color: #88aacc; font-size: 11px; font-weight: bold; background: transparent;")
-        self.midi_label.setFixedHeight(18)
-        layout.addWidget(self.midi_label)
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(2, 2, 2, 2)
+        layout.setSpacing(2)
 
         # 推子滑块
-        self.slider = FaderSlider()
-        self.slider.value_changed.connect(self._on_value_changed)
-        layout.addWidget(self.slider, stretch=1)
+        self._slider = FaderSlider(self)
+        layout.addWidget(self._slider, alignment=Qt.AlignmentFlag.AlignCenter)
 
-        # dB值标签（底部）
-        self.db_label = QLabel("0.0 dB")
-        self.db_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.db_label.setStyleSheet(f"color: {TEXT_LABEL}; font-size: 10px; background: transparent;")
-        self.db_label.setFixedHeight(16)
-        layout.addWidget(self.db_label)
+        # 连接信号
+        self._slider.value_changed.connect(self.value_changed)
+        self._slider.calibration_progress.connect(self.calibration_progress)
+        self._slider.calibration_complete.connect(self.calibration_complete)
 
-    def _on_value_changed(self, value: int):
-        """推子值变化处理"""
-        db_str = midi_to_db(value)
-        self.midi_label.setText(str(value))
-        if db_str == "-inf":
-            self.db_label.setText("-inf dB")
-        else:
-            try:
-                db_val = float(db_str)
-                self.db_label.setText(f"{db_val:+.1f} dB")
-            except ValueError:
-                self.db_label.setText(f"{db_str} dB")
-        self.value_changed.emit(value)
+    def get_value(self) -> int:
+        return self._slider.value
 
-    def set_value(self, value: int):
-        """外部设置推子值"""
-        self.slider.set_value(value)
+    def set_value(self, val: int, emit: bool = True):
+        self._slider.set_value(val, emit)
 
-    @property
-    def value(self) -> int:
-        """当前MIDI值"""
-        return self.slider.value
+    def start_calibration(self, target: int):
+        self._slider.start_calibration(target)
+
+    def get_db_str(self) -> str:
+        return midi_to_db(self._slider.value)

@@ -1,184 +1,221 @@
-# ui/channel_strip.py
-# 单通道条控件 - 整合LCD + 编码器 + 按键 + 推子
+# mixer_simulator/ui/channel_strip.py
+# 推子条部件 - 整合LCD、编码器、推子、4个按钮
 
 from PyQt6.QtWidgets import (
-    QFrame, QVBoxLayout, QHBoxLayout, QLabel, QSizePolicy
+    QWidget, QVBoxLayout, QHBoxLayout, QFrame, QLabel, QSizePolicy
 )
 from PyQt6.QtCore import Qt, pyqtSignal
-from PyQt6.QtGui import QFont
+from PyQt6.QtGui import QColor
 
-from .style import BG_CHANNEL, BORDER_COLOR, TEXT_LABEL, TEXT_PRIMARY
-from .lcd_widget import LcdWidget
-from .encoder_widget import EncoderWidget
-from .button_widget import ButtonWidget, BTN_TYPE_MUTE, BTN_TYPE_SOLO, BTN_TYPE_REC, BTN_TYPE_SEL
-from .fader_widget import FaderWidget
+from mixer_simulator.ui.lcd_widget import LcdWidget
+from mixer_simulator.ui.encoder_widget import EncoderWidget
+from mixer_simulator.ui.button_widget import ButtonWidget
+from mixer_simulator.ui.fader_widget import FaderWidget, midi_to_db
+from mixer_simulator.ui.style import BG_CHANNEL, BORDER_COLOR, TEXT_SECONDARY
+from mixer_simulator.core.controller import ChannelState, ENCODER_MODES
 
 
-class ChannelStrip(QFrame):
-    """单通道条控件
-    
-    严格按照PCB布局从上到下：
-      1. LCD显示屏
-      2. 编码器（旋钮+LED）
-      3. 上方按键区（MUTE + SOLO，各自带LED）
-      4. 推子（垂直滑块）
-      5. 下方按键区（REC + SEL，各自带LED）
-    """
+class ChannelStrip(QWidget):
+    """单条推子条 - strip_id 为物理编号（0~4）"""
 
-    # 信号定义（透传给主控制器）
-    fader_moved = pyqtSignal(int, int)         # (channel_id, value)
-    encoder_rotated = pyqtSignal(int, int)     # (channel_id, delta)
-    encoder_clicked = pyqtSignal(int)          # (channel_id)
-    mute_clicked = pyqtSignal(int)             # (channel_id)
-    solo_clicked = pyqtSignal(int)             # (channel_id)
-    rec_clicked = pyqtSignal(int)              # (channel_id)
-    sel_clicked = pyqtSignal(int)              # (channel_id)
+    # 推子条发出的信号
+    fader_moved = pyqtSignal(int, int)           # strip_id, value
+    encoder_rotated = pyqtSignal(int, float)     # strip_id, delta（含加速）
+    encoder_single_clicked = pyqtSignal(int)     # strip_id
+    encoder_double_clicked = pyqtSignal(int)     # strip_id
+    mute_clicked = pyqtSignal(int)               # strip_id
+    solo_clicked = pyqtSignal(int)               # strip_id
+    select_clicked = pyqtSignal(int)             # strip_id
+    dyn_clicked = pyqtSignal(int)                # strip_id
 
-    def __init__(self, channel_id: int, parent=None):
+    def __init__(self, strip_id: int, parent=None):
         super().__init__(parent)
-        self.channel_id = channel_id
+        self.strip_id = strip_id
+        self._current_channel = 1
+        self._encoder_mode = "COMP"
+        self._page_turn_mode = False
+
+        self.setFixedWidth(165)
+        self.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Expanding)
         self._setup_ui()
-        self._connect_signals()
+        self._apply_style()
 
     def _setup_ui(self):
-        """初始化UI布局"""
-        self.setObjectName("channelStrip")
-        self.setFrameShape(QFrame.Shape.StyledPanel)
-        self.setStyleSheet(f"""
-            QFrame#channelStrip {{
-                background-color: {BG_CHANNEL};
-                border: 1px solid {BORDER_COLOR};
-                border-radius: 6px;
-            }}
-        """)
-        self.setMinimumWidth(130)
-        self.setMaximumWidth(165)
-        self.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Expanding)
+        """构建推子条布局：LCD → 编码器+上方2按钮 → 推子 → 下方2按钮"""
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(6, 6, 6, 6)
+        outer.setSpacing(4)
 
-        main_layout = QVBoxLayout(self)
-        main_layout.setContentsMargins(8, 8, 8, 8)
-        main_layout.setSpacing(6)
-        main_layout.setAlignment(Qt.AlignmentFlag.AlignHCenter)
+        # 通道标题标签
+        self._title_label = QLabel(f"Strip {self.strip_id + 1}", self)
+        self._title_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._title_label.setStyleSheet(f"color: {TEXT_SECONDARY}; font-size: 9px;")
+        outer.addWidget(self._title_label)
 
-        # ---- 通道标题 ----
-        ch_label = QLabel(f"CH {self.channel_id + 1}")
-        ch_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        ch_label.setStyleSheet(f"""
-            color: {TEXT_PRIMARY};
-            font-size: 12px;
-            font-weight: bold;
-            background: transparent;
-            padding: 2px;
-        """)
-        main_layout.addWidget(ch_label)
+        # LCD
+        self._lcd = LcdWidget(self)
+        outer.addWidget(self._lcd, alignment=Qt.AlignmentFlag.AlignCenter)
 
-        # ---- 分割线 ----
-        main_layout.addWidget(self._make_separator())
-
-        # ---- 1. LCD显示屏 ----
-        self.lcd = LcdWidget(self.channel_id)
-        main_layout.addWidget(self.lcd, alignment=Qt.AlignmentFlag.AlignHCenter)
-
-        # ---- 2. 编码器区域 ----
-        self.encoder = EncoderWidget(self.channel_id)
-        main_layout.addWidget(self.encoder, alignment=Qt.AlignmentFlag.AlignHCenter)
-
-        # ---- 分割线 ----
-        main_layout.addWidget(self._make_separator())
-
-        # ---- 3. 上方按键区（MUTE + SOLO） ----
-        upper_btn_label = QLabel("上方按键")
-        upper_btn_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        upper_btn_label.setStyleSheet(f"color: {TEXT_LABEL}; font-size: 9px; background: transparent;")
-        main_layout.addWidget(upper_btn_label)
-
-        self.btn_mute = ButtonWidget(BTN_TYPE_MUTE)
-        self.btn_mute.setToolTip(f"CH{self.channel_id + 1} MUTE - 静音\n点击切换")
-        main_layout.addWidget(self.btn_mute, alignment=Qt.AlignmentFlag.AlignHCenter)
-
-        self.btn_solo = ButtonWidget(BTN_TYPE_SOLO)
-        self.btn_solo.setToolTip(f"CH{self.channel_id + 1} SOLO - 独奏\n点击切换")
-        main_layout.addWidget(self.btn_solo, alignment=Qt.AlignmentFlag.AlignHCenter)
-
-        # ---- 分割线 ----
-        main_layout.addWidget(self._make_separator())
-
-        # ---- 4. 推子区域 ----
-        fader_label = QLabel("FADER")
-        fader_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        fader_label.setStyleSheet(f"color: {TEXT_LABEL}; font-size: 9px; background: transparent;")
-        main_layout.addWidget(fader_label)
-
-        self.fader = FaderWidget(self.channel_id)
-        main_layout.addWidget(self.fader, stretch=1, alignment=Qt.AlignmentFlag.AlignHCenter)
-
-        # ---- 分割线 ----
-        main_layout.addWidget(self._make_separator())
-
-        # ---- 5. 下方按键区（REC + SEL） ----
-        lower_btn_label = QLabel("下方按键")
-        lower_btn_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        lower_btn_label.setStyleSheet(f"color: {TEXT_LABEL}; font-size: 9px; background: transparent;")
-        main_layout.addWidget(lower_btn_label)
-
-        self.btn_rec = ButtonWidget(BTN_TYPE_REC)
-        self.btn_rec.setToolTip(f"CH{self.channel_id + 1} REC - 录音\n点击切换")
-        main_layout.addWidget(self.btn_rec, alignment=Qt.AlignmentFlag.AlignHCenter)
-
-        self.btn_sel = ButtonWidget(BTN_TYPE_SEL)
-        self.btn_sel.setToolTip(f"CH{self.channel_id + 1} SEL - 选择/激活\n点击切换")
-        main_layout.addWidget(self.btn_sel, alignment=Qt.AlignmentFlag.AlignHCenter)
-
-    def _connect_signals(self):
-        """连接控件信号到通道信号"""
-        ch = self.channel_id
+        # 编码器行（编码器居中，左右各一个按钮）
+        enc_row = QHBoxLayout()
+        enc_row.setSpacing(4)
+        self._btn_mute = ButtonWidget("MUTE", self)
+        self._encoder = EncoderWidget(self)
+        self._btn_solo = ButtonWidget("SOLO", self)
+        enc_row.addWidget(self._btn_mute)
+        enc_row.addWidget(self._encoder)
+        enc_row.addWidget(self._btn_solo)
+        outer.addLayout(enc_row)
 
         # 推子
-        self.fader.value_changed.connect(lambda v: self.fader_moved.emit(ch, v))
+        self._fader = FaderWidget(self)
+        outer.addWidget(self._fader, alignment=Qt.AlignmentFlag.AlignCenter)
 
-        # 编码器
-        self.encoder.rotated.connect(lambda d: self.encoder_rotated.emit(ch, d))
-        self.encoder.clicked.connect(lambda: self.encoder_clicked.emit(ch))
+        # 下方按钮行
+        btn_row = QHBoxLayout()
+        btn_row.setSpacing(4)
+        self._btn_select = ButtonWidget("SELECT", self)
+        self._btn_dyn = ButtonWidget("DYN", self)
+        btn_row.addWidget(self._btn_select)
+        btn_row.addWidget(self._btn_dyn)
+        outer.addLayout(btn_row)
 
-        # 按键
-        self.btn_mute.clicked.connect(lambda: self.mute_clicked.emit(ch))
-        self.btn_solo.clicked.connect(lambda: self.solo_clicked.emit(ch))
-        self.btn_rec.clicked.connect(lambda: self.rec_clicked.emit(ch))
-        self.btn_sel.clicked.connect(lambda: self.sel_clicked.emit(ch))
+        # 连接内部信号
+        self._fader.value_changed.connect(self._on_fader_moved)
+        self._fader.calibration_progress.connect(self._on_cal_progress)
+        self._fader.calibration_complete.connect(self._on_cal_complete)
+        self._encoder.rotated.connect(self._on_encoder_rotated)
+        self._encoder.single_clicked.connect(self._on_encoder_single_click)
+        self._encoder.double_clicked.connect(self._on_encoder_double_click)
+        self._btn_mute.clicked.connect(lambda: self.mute_clicked.emit(self.strip_id))
+        self._btn_solo.clicked.connect(lambda: self.solo_clicked.emit(self.strip_id))
+        self._btn_select.clicked.connect(lambda: self.select_clicked.emit(self.strip_id))
+        self._btn_dyn.clicked.connect(lambda: self.dyn_clicked.emit(self.strip_id))
 
-    def _make_separator(self) -> QFrame:
-        """创建水平分割线"""
-        sep = QFrame()
-        sep.setFrameShape(QFrame.Shape.HLine)
-        sep.setFixedHeight(1)
-        sep.setStyleSheet(f"background-color: {BORDER_COLOR}; border: none;")
-        return sep
+    def _apply_style(self):
+        """应用推子条样式"""
+        self.setStyleSheet(
+            f"ChannelStrip {{ background-color: {BG_CHANNEL}; "
+            f"border: 1px solid {BORDER_COLOR}; border-radius: 6px; }}"
+        )
 
-    # ----------------------------------------------------------------
-    # 状态更新接口（由控制器调用）
-    # ----------------------------------------------------------------
+    # ------------------------------------------------------------------ #
+    # 公开接口：从控制器更新UI
+    # ------------------------------------------------------------------ #
 
-    def update_fader_db(self, db_str: str):
-        """更新LCD的dB显示"""
-        self.lcd.set_db_value(db_str)
+    def set_current_channel(self, ch_num: int, ch_name: str):
+        """更新当前显示的通道号和名称"""
+        self._current_channel = ch_num
+        self._title_label.setText(f"CH{ch_num}")
+        self._lcd.set_channel(ch_num, ch_name)
 
-    def update_encoder_mode(self, mode: str):
-        """更新编码器模式（LED颜色 + LCD显示）"""
-        self.encoder.set_mode(mode)
-        self.lcd.set_mode(mode)
+    def update_from_channel_state(self, ch_state: ChannelState):
+        """从通道状态对象恢复所有UI"""
+        mode_name = ENCODER_MODES[ch_state.encoder_mode_index]
+        self._encoder_mode = mode_name
+        self._encoder.set_mode(mode_name)
 
-    def update_encoder_value(self, value: int):
-        """更新编码器值显示"""
-        self.encoder.set_value_display(value)
+        # 更新LCD编码器显示
+        val_str = self._get_encoder_value_str(ch_state)
+        self._lcd.set_channel(ch_state.ch_num, ch_state.channel_name)
+        self._lcd.set_encoder_display(mode_name, val_str)
+        self._lcd.set_button_states(
+            ch_state.mute_active,
+            ch_state.solo_active,
+            ch_state.select_active,
+            ch_state.dyn_active,
+        )
+        self._lcd.set_fader_db(midi_to_db(ch_state.fader_value))
+
+        # 更新按钮状态
+        self._btn_mute.set_active(ch_state.mute_active)
+        self._btn_solo.set_active(ch_state.solo_active)
+        self._btn_select.set_active(ch_state.select_active)
+        self._btn_dyn.set_active(ch_state.dyn_active)
+
+        # 更新推子（不发送信号，避免循环）
+        self._fader.set_value(ch_state.fader_value, emit=False)
+        self._title_label.setText(f"CH{ch_state.ch_num}")
+
+    def start_channel_calibration(self, target_val: int, ch_num: int, ch_name: str):
+        """开始推子校准动画并显示校准LCD"""
+        self._lcd.set_calibrating(True, 0, ch_num, ch_name)
+        self._fader.start_calibration(target_val)
+
+    def set_page_turn_mode(self, active: bool, target_ch: int):
+        """设置翻页模式显示"""
+        self._page_turn_mode = active
+        self._encoder.set_page_turn_mode(active)
+        self._lcd.set_page_turn_mode(active, target_ch)
+
+    def update_encoder_display(self, mode: str, val_str: str):
+        """更新编码器模式显示"""
+        self._encoder_mode = mode
+        self._encoder.set_mode(mode)
+        self._lcd.set_encoder_display(mode, val_str)
 
     def update_button_state(self, btn_type: str, active: bool):
-        """更新按键状态"""
-        btn_map = {
-            "mute": self.btn_mute,
-            "solo": self.btn_solo,
-            "rec":  self.btn_rec,
-            "sel":  self.btn_sel,
-        }
-        btn = btn_map.get(btn_type)
-        if btn:
-            btn.set_active(active)
+        """更新单个按钮状态"""
+        if btn_type == "MUTE":
+            self._btn_mute.set_active(active)
+            self._lcd.set_mute_active(active)
+        elif btn_type == "SOLO":
+            self._btn_solo.set_active(active)
+        elif btn_type == "SELECT":
+            self._btn_select.set_active(active)
+        elif btn_type == "DYN":
+            self._btn_dyn.set_active(active)
+
+        # 刷新LCD按钮提示行
+        self._lcd.set_button_states(
+            self._btn_mute.is_active(),
+            self._btn_solo.is_active(),
+            self._btn_select.is_active(),
+            self._btn_dyn.is_active(),
+        )
+
+    # ------------------------------------------------------------------ #
+    # 内部信号转发
+    # ------------------------------------------------------------------ #
+
+    def _on_fader_moved(self, val: int):
+        self._lcd.set_fader_db(midi_to_db(val))
+        self.fader_moved.emit(self.strip_id, val)
+
+    def _on_cal_progress(self, pct: int):
+        self._lcd.set_calibrating(
+            True, pct,
+            self._current_channel,
+            self._lcd._ch_name
+        )
+
+    def _on_cal_complete(self):
+        self._lcd.set_calibrating(False, 100, self._current_channel, "")
+
+    def _on_encoder_rotated(self, delta: float):
+        self.encoder_rotated.emit(self.strip_id, delta)
+
+    def _on_encoder_single_click(self):
+        self.encoder_single_clicked.emit(self.strip_id)
+
+    def _on_encoder_double_click(self):
+        self.encoder_double_clicked.emit(self.strip_id)
+
+    # ------------------------------------------------------------------ #
+    # 辅助
+    # ------------------------------------------------------------------ #
+
+    def _get_encoder_value_str(self, ch_state: ChannelState) -> str:
+        """根据编码器模式获取参数值字符串"""
+        idx = ch_state.encoder_mode_index
+        if idx == 0:
+            return f"{ch_state.comp_thr:.1f}dB"
+        elif idx == 1:
+            return f"{ch_state.gate_thr:.1f}dB"
+        else:
+            pan = ch_state.pan
+            if pan < 0:
+                return f"L{abs(pan)}"
+            elif pan > 0:
+                return f"R{pan}"
+            return "C"

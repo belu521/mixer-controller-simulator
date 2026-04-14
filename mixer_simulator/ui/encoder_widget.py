@@ -212,7 +212,8 @@ class EncoderWidget(QWidget):
     def __init__(self, channel_id: int, parent=None):
         super().__init__(parent)
         self.channel_id = channel_id
-        self._last_rot_ms = 0.0   # 上次旋转时间戳（毫秒）
+        # 初始化为当前时间，避免第一次旋转因间隔过大被判断为慢速
+        self._last_rot_ms = time.monotonic() * 1000.0
         self._setup_ui()
         self.set_mode(0)          # 默认COMP模式，青色LED
 

@@ -302,8 +302,11 @@ class ChannelStrip(QFrame):
             self.current_channel, self._current_ch_name, progress)
 
     def _finish_calibration(self):
-        """校准完成：解锁推子，恢复正常LCD显示"""
+        """校准完成：显示100%进度后解锁推子，恢复正常LCD显示"""
         self._calib_timer.stop()
+        # 短暂显示100%完成状态
+        self.lcd.show_calibration(
+            self.current_channel, self._current_ch_name, 100)
         self._calibrating = False
         self.fader.slider._locked = False
         self.lcd.show_normal()

@@ -116,7 +116,7 @@ class ChannelStrip(QWidget):
         self._encoder.set_mode(mode_name)
 
         # 更新LCD编码器显示
-        val_str = self._get_encoder_value_str(ch_state)
+        val_str = self.get_encoder_value_str(ch_state)
         self._lcd.set_channel(ch_state.ch_num, ch_state.channel_name)
         self._lcd.set_encoder_display(mode_name, val_str)
         self._lcd.set_button_states(
@@ -186,7 +186,7 @@ class ChannelStrip(QWidget):
         self._lcd.set_calibrating(
             True, pct,
             self._current_channel,
-            self._lcd._ch_name
+            self._lcd.get_channel_name()
         )
 
     def _on_cal_complete(self):
@@ -205,7 +205,7 @@ class ChannelStrip(QWidget):
     # 辅助
     # ------------------------------------------------------------------ #
 
-    def _get_encoder_value_str(self, ch_state: ChannelState) -> str:
+    def get_encoder_value_str(self, ch_state: ChannelState) -> str:
         """根据编码器模式获取参数值字符串"""
         idx = ch_state.encoder_mode_index
         if idx == 0:

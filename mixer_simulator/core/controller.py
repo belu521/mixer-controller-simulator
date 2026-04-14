@@ -3,6 +3,19 @@
 
 from PyQt6.QtCore import QObject, pyqtSignal
 
+# ------------------------------------------------------------------ #
+# MIDI 映射常量（DM Series）
+# ------------------------------------------------------------------ #
+CC_FADER = 7        # 推子音量
+CC_COMP_THR = 18    # 压缩阈值
+CC_GATE_THR = 16    # 门限阈值
+CC_PAN = 10         # 声像
+
+NOTE_MUTE_BASE = 0    # MUTE Note = NOTE_MUTE_BASE + (channel - 1)
+NOTE_SOLO_BASE = 32   # SOLO Note = NOTE_SOLO_BASE + (channel - 1)
+NOTE_SELECT_BASE = 64 # SELECT Note = NOTE_SELECT_BASE + (channel - 1)
+NOTE_DYN_BASE = 96    # DYN Note = NOTE_DYN_BASE + (channel - 1)
+
 # 默认通道名称列表（用于演示）
 _DEFAULT_CHANNEL_NAMES = [
     "Kick Drm", "Snare", "Hi-Hat", "OHL", "OHR",
@@ -125,7 +138,7 @@ class MixerController(QObject):
         ch_state = self._channels[strip.current_channel]
         ch_state.fader_value = value
         # 发送 MIDI CC7（音量）
-        self._send_cc(strip.current_channel, 7, value)
+        self._send_cc(strip.current_channel, CC_FADER, value)
         self.fader_changed.emit(strip_id, value)
 
     # ------------------------------------------------------------------ #
@@ -153,13 +166,13 @@ class MixerController(QObject):
             ch_state.comp_thr = max(-60.0, min(0.0, ch_state.comp_thr + delta * 0.5))
             val_str = f"{ch_state.comp_thr:.1f}dB"
             midi_val = int((ch_state.comp_thr + 60) / 60 * 127)
-            self._send_cc(strip.current_channel, 18, max(0, min(127, midi_val)))
+            self._send_cc(strip.current_channel, CC_COMP_THR, max(0, min(127, midi_val)))
         elif mode_idx == 1:
             # GATE 模式：调整门限阈值
             ch_state.gate_thr = max(-80.0, min(0.0, ch_state.gate_thr + delta * 0.5))
             val_str = f"{ch_state.gate_thr:.1f}dB"
             midi_val = int((ch_state.gate_thr + 80) / 80 * 127)
-            self._send_cc(strip.current_channel, 16, max(0, min(127, midi_val)))
+            self._send_cc(strip.current_channel, CC_GATE_THR, max(0, min(127, midi_val)))
         else:
             # PAN 模式：调整声像（整数步进）
             ch_state.pan = max(-63, min(63, ch_state.pan + int(delta)))
@@ -170,7 +183,7 @@ class MixerController(QObject):
             else:
                 val_str = "C"
             midi_val = ch_state.pan + 64
-            self._send_cc(strip.current_channel, 10, max(0, min(127, midi_val)))
+            self._send_cc(strip.current_channel, CC_PAN, max(0, min(127, midi_val)))
 
         self.encoder_changed.emit(strip_id, val_str)
 
@@ -212,7 +225,7 @@ class MixerController(QObject):
         """MUTE 按钮点击（切换）"""
         ch_state = self._get_strip_channel_state(strip_id)
         ch_state.mute_active = not ch_state.mute_active
-        note = (ch_state.ch_num - 1) % 128  # Note = 0 + (channel-1)
+        note = (NOTE_MUTE_BASE + ch_state.ch_num - 1) % 128
         if ch_state.mute_active:
             self._send_note_on(ch_state.ch_num, note)
         else:
@@ -223,7 +236,7 @@ class MixerController(QObject):
         """SOLO 按钮点击（切换）"""
         ch_state = self._get_strip_channel_state(strip_id)
         ch_state.solo_active = not ch_state.solo_active
-        note = (32 + ch_state.ch_num - 1) % 128  # Note = 32 + (channel-1)
+        note = (NOTE_SOLO_BASE + ch_state.ch_num - 1) % 128
         if ch_state.solo_active:
             self._send_note_on(ch_state.ch_num, note)
         else:
@@ -242,7 +255,7 @@ class MixerController(QObject):
 
         ch_state = self._channels[target_ch]
         ch_state.select_active = not ch_state.select_active
-        note = (64 + ch_state.ch_num - 1) % 128  # Note = 64 + (channel-1)
+        note = (NOTE_SELECT_BASE + ch_state.ch_num - 1) % 128
         if ch_state.select_active:
             self._send_note_on(ch_state.ch_num, note)
         else:
@@ -253,7 +266,7 @@ class MixerController(QObject):
         """DYN 按钮点击（切换）"""
         ch_state = self._get_strip_channel_state(strip_id)
         ch_state.dyn_active = not ch_state.dyn_active
-        note = (96 + ch_state.ch_num - 1) % 128  # Note = 96 + (channel-1)
+        note = (NOTE_DYN_BASE + ch_state.ch_num - 1) % 128
         if ch_state.dyn_active:
             self._send_note_on(ch_state.ch_num, note)
         else:

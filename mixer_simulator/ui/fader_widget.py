@@ -45,6 +45,7 @@ class FaderSlider(QWidget):
 
         # 校准动画
         self._cal_target = 100
+        self._cal_start_value = 100  # 校准开始时的初始值（用于进度计算）
         self._cal_timer = QTimer(self)
         self._cal_timer.timeout.connect(self._calibration_step)
 
@@ -65,6 +66,7 @@ class FaderSlider(QWidget):
         """开始推子校准动画，平滑移动到目标值"""
         self._locked = True
         self._cal_target = max(0, min(127, target))
+        self._cal_start_value = self._value  # 记录起始值用于进度计算
         self._cal_timer.start(CALIBRATION_STEP_MS)
 
     def _calibration_step(self):
@@ -79,14 +81,14 @@ class FaderSlider(QWidget):
         else:
             step = CALIBRATION_MAX_STEP if diff > 0 else -CALIBRATION_MAX_STEP
             self._value += step
-            # 计算进度
-            total = abs(self._cal_target - (self._value - step))
-            done = abs(self._value - (self._value - step))
-            if total > 0:
-                pct = int(100 - abs(self._cal_target - self._value) / total * 100)
+            # 计算校准进度：已移动距离 / 总距离
+            total_distance = abs(self._cal_target - self._cal_start_value)
+            done_distance = abs(self._value - self._cal_start_value)
+            if total_distance > 0:
+                pct = int(done_distance / total_distance * 100)
             else:
                 pct = 100
-            self.calibration_progress.emit(max(0, min(100, pct)))
+            self.calibration_progress.emit(max(0, min(99, pct)))
         self.update()
 
     # ------------------------------------------------------------------ #

@@ -43,8 +43,8 @@ class EncoderKnob(QWidget):
         self._click_timer.timeout.connect(self._on_click_timer)
         self._pending_click = False    # 是否有待定的单击
 
-        # 旋转加速
-        self._last_rotate_time = 0.0  # 上次旋转时间戳（秒）
+        # 旋转加速 - 初始化为当前时间，避免第一次旋转被误判为慢速
+        self._last_rotate_time = time.monotonic()
 
         # 模式颜色
         self._led_color = QColor(LED_CYAN)

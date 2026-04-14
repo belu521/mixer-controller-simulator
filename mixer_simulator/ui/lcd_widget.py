@@ -90,6 +90,10 @@ class LcdWidget(QWidget):
     # 公开设置接口
     # ------------------------------------------------------------------ #
 
+    def get_channel_name(self) -> str:
+        """获取当前通道名称（供外部访问）"""
+        return self._ch_name
+
     def set_channel(self, ch_num: int, ch_name: str):
         """设置通道号和名称"""
         self._ch_num = ch_num

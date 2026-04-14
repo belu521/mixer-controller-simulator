@@ -234,7 +234,7 @@ class MainWindow(QMainWindow):
         """编码器模式切换时更新LCD和编码器颜色"""
         s = self._controller.get_strip_state(strip_id)
         ch = self._controller.get_channel_state(s.current_channel)
-        val_str = self._strips[strip_id]._get_encoder_value_str(ch)
+        val_str = self._strips[strip_id].get_encoder_value_str(ch)
         self._strips[strip_id].update_encoder_display(mode_name, val_str)
 
     def _on_button_changed(self, strip_id: int, btn_type: str, state: bool):

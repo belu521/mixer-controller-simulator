@@ -1,11 +1,13 @@
 # ui/encoder_widget.py
-# 编码器控件 - 模拟EC11旋转编码器（旋转+点击+WS2812B LED）
-
-from PyQt6.QtWidgets import QWidget, QVBoxLayout, QHBoxLayout, QLabel, QSizePolicy
-from PyQt6.QtCore import Qt, pyqtSignal, QPoint, QTimer
-from PyQt6.QtGui import QPainter, QColor, QPen, QBrush, QFont, QMouseEvent, QWheelEvent
+# 编码器控件 - 模拟EC11旋转编码器（旋转+单击+双击+WS2812B LED）
+# 升级：单击切换模式、双击进入翻页、旋转加速度曲线
 
 import math
+import time
+
+from PyQt6.QtWidgets import QWidget, QVBoxLayout, QHBoxLayout, QLabel
+from PyQt6.QtCore import Qt, pyqtSignal, QPoint, QTimer
+from PyQt6.QtGui import QPainter, QColor, QPen, QBrush, QMouseEvent, QWheelEvent
 
 from .style import (
     ENCODER_BG, ENCODER_DOT,
@@ -13,102 +15,134 @@ from .style import (
     TEXT_LABEL
 )
 
+# 编码器模式LED颜色
+ENC_MODE_LED_COLORS = {
+    0: '#00ffff',   # COMP - 青色
+    1: '#ffffff',   # GATE - 白色
+    2: '#ffff00',   # PAN  - 黄色
+}
+ENC_MODE_LABELS = {0: 'COMP', 1: 'GATE', 2: 'PAN'}
+
+# 单击判定等待时间（ms）：在此时间内若第二次点击则判定为双击
+CLICK_TIMEOUT_MS = 300
+
 
 class EncoderKnob(QWidget):
-    """编码器旋钮绘制控件"""
+    """编码器旋钮绘制控件
+    
+    交互方式：
+      - 左键拖动 / 滚轮 → 旋转（rotated信号）
+      - 单次点击（不拖动） → clicked 信号
+      - 快速双击（两次点击间隔 < 300ms） → double_clicked 信号
+    """
 
-    rotated = pyqtSignal(int)   # 旋转信号 delta=+1/-1
-    clicked = pyqtSignal()      # 点击信号
+    rotated        = pyqtSignal(int)   # 旋转 delta=+1/-1（未含加速度）
+    clicked        = pyqtSignal()      # 单击（模式切换）
+    double_clicked = pyqtSignal()      # 双击（进入翻页）
 
-    KNOB_SIZE = 56  # 旋钮直径
+    KNOB_SIZE = 56  # 旋钮直径（px）
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        self._angle = 0.0          # 当前角度（度），0=正上方
-        self._last_mouse_y = 0     # 上次鼠标Y坐标（用于拖动旋转）
-        self._dragging = False
+        self._angle      = 0.0       # 当前旋钮角度（度）
+        self._last_y     = 0         # 上次鼠标Y（拖动用）
+        self._dragging   = False
+        self._did_drag   = False     # 本次按下是否发生了拖动
+
+        # 单击延迟计时器（用于区分单/双击）
+        self._click_timer = QTimer(self)
+        self._click_timer.setSingleShot(True)
+        self._click_timer.timeout.connect(self._emit_single_click)
+
         self.setFixedSize(self.KNOB_SIZE, self.KNOB_SIZE)
         self.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.setToolTip("左键拖动旋转 / 滚轮调节 / 双击重置")
+        self.setToolTip(
+            "左键拖动 / 滚轮 → 旋转\n"
+            "单击 → 切换模式\n"
+            "双击 → 进入翻页"
+        )
+
+    def _emit_single_click(self):
+        """定时器超时：确认为单击"""
+        self.clicked.emit()
 
     def set_angle(self, angle: float):
-        """设置旋钮角度"""
         self._angle = angle % 360
         self.update()
 
     def rotate_by(self, delta_angle: float):
-        """旋转指定角度"""
         self._angle = (self._angle + delta_angle) % 360
         self.update()
 
+    # ---- 绘制 ----
     def paintEvent(self, event):
-        """绘制编码器旋钮"""
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
 
-        w = self.width()
-        h = self.height()
-        cx = w // 2
-        cy = h // 2
-        r = min(w, h) // 2 - 2  # 旋钮半径
+        w, h = self.width(), self.height()
+        cx, cy = w // 2, h // 2
+        r = min(w, h) // 2 - 2
 
-        # 绘制外圈阴影
+        # 外圈阴影
         painter.setPen(Qt.PenStyle.NoPen)
         painter.setBrush(QBrush(QColor("#111111")))
         painter.drawEllipse(QPoint(cx, cy), r + 2, r + 2)
 
-        # 绘制旋钮主体（深灰色）
+        # 旋钮主体
         painter.setBrush(QBrush(QColor(ENCODER_BG)))
         painter.setPen(QPen(QColor("#555555"), 1))
         painter.drawEllipse(QPoint(cx, cy), r, r)
 
-        # 绘制内圈纹理线（装饰）
+        # 内圈纹理线
         painter.setPen(QPen(QColor("#3a3a3a"), 1))
         inner_r = int(r * 0.7)
         painter.drawEllipse(QPoint(cx, cy), inner_r, inner_r)
 
-        # 绘制指示点（绿色小圆点，随旋转移动）
-        angle_rad = math.radians(self._angle - 90)  # 从12点位置开始
+        # 指示点（从12点位置开始随角度旋转）
+        angle_rad = math.radians(self._angle - 90)
         dot_r = int(r * 0.68)
         dot_x = cx + int(dot_r * math.cos(angle_rad))
         dot_y = cy + int(dot_r * math.sin(angle_rad))
-
         painter.setPen(Qt.PenStyle.NoPen)
         painter.setBrush(QBrush(QColor(ENCODER_DOT)))
         painter.drawEllipse(QPoint(dot_x, dot_y), 4, 4)
 
-        # 绘制中心小点
+        # 中心圆点
         painter.setBrush(QBrush(QColor("#555555")))
         painter.drawEllipse(QPoint(cx, cy), 3, 3)
 
+    # ---- 鼠标事件 ----
     def mousePressEvent(self, event: QMouseEvent):
-        """鼠标按下 - 记录起始位置"""
         if event.button() == Qt.MouseButton.LeftButton:
             self._dragging = True
-            self._last_mouse_y = event.pos().y()
+            self._did_drag = False
+            self._last_y = event.pos().y()
 
     def mouseMoveEvent(self, event: QMouseEvent):
-        """鼠标拖动 - 旋转编码器"""
         if self._dragging:
-            dy = self._last_mouse_y - event.pos().y()  # 上移=正，下移=负
-            self._last_mouse_y = event.pos().y()
+            dy = self._last_y - event.pos().y()
+            self._last_y = event.pos().y()
             if dy != 0:
+                self._did_drag = True
                 delta = 1 if dy > 0 else -1
-                self.rotate_by(delta * 15)  # 每步旋转15度
+                self.rotate_by(delta * 15)
                 self.rotated.emit(delta)
 
     def mouseReleaseEvent(self, event: QMouseEvent):
-        """鼠标释放"""
         if event.button() == Qt.MouseButton.LeftButton:
+            if not self._did_drag:
+                # 无拖动的释放：启动单击计时器
+                self._click_timer.start(CLICK_TIMEOUT_MS)
             self._dragging = False
+            self._did_drag = False
 
     def mouseDoubleClickEvent(self, event: QMouseEvent):
-        """双击 = 编码器按键点击"""
+        """双击：取消单击计时，改发双击信号"""
         if event.button() == Qt.MouseButton.LeftButton:
-            self.clicked.emit()
+            self._click_timer.stop()
+            self.double_clicked.emit()
 
     def wheelEvent(self, event: QWheelEvent):
-        """滚轮旋转编码器"""
         delta = 1 if event.angleDelta().y() > 0 else -1
         self.rotate_by(delta * 15)
         self.rotated.emit(delta)
@@ -117,7 +151,7 @@ class EncoderKnob(QWidget):
 class LedIndicator(QWidget):
     """WS2812B LED指示灯模拟"""
 
-    LED_SIZE = 12  # LED直径
+    LED_SIZE = 12
 
     def __init__(self, color: str = LED_OFF, parent=None):
         super().__init__(parent)
@@ -125,12 +159,10 @@ class LedIndicator(QWidget):
         self.setFixedSize(self.LED_SIZE, self.LED_SIZE)
 
     def set_color(self, color: str):
-        """设置LED颜色"""
         self._color = color
         self.update()
 
     def paintEvent(self, event):
-        """绘制LED"""
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
 
@@ -138,29 +170,26 @@ class LedIndicator(QWidget):
         cy = self.height() // 2
         r = min(self.width(), self.height()) // 2 - 1
 
-        # 熄灭状态
-        if self._color == LED_OFF or self._color == "#1a1a1a":
+        # 熄灭
+        if self._color in (LED_OFF, "#1a1a1a"):
             painter.setPen(QPen(QColor("#333333"), 1))
             painter.setBrush(QBrush(QColor("#1a1a1a")))
             painter.drawEllipse(QPoint(cx, cy), r, r)
             return
 
-        # 点亮状态 - 带发光效果
+        # 点亮：主体 + 外圈发光 + 高光
         led_color = QColor(self._color)
 
-        # 外圈发光（半透明）
-        glow_color = QColor(led_color)
-        glow_color.setAlpha(60)
+        glow = QColor(led_color)
+        glow.setAlpha(60)
         painter.setPen(Qt.PenStyle.NoPen)
-        painter.setBrush(QBrush(glow_color))
+        painter.setBrush(QBrush(glow))
         painter.drawEllipse(QPoint(cx, cy), r + 2, r + 2)
 
-        # LED主体
         painter.setPen(QPen(led_color.darker(150), 1))
         painter.setBrush(QBrush(led_color))
         painter.drawEllipse(QPoint(cx, cy), r, r)
 
-        # 高光
         highlight = QColor(255, 255, 255, 100)
         painter.setPen(Qt.PenStyle.NoPen)
         painter.setBrush(QBrush(highlight))
@@ -168,83 +197,95 @@ class LedIndicator(QWidget):
 
 
 class EncoderWidget(QWidget):
-    """编码器控件 - 旋钮 + WS2812B LED + 标签
+    """编码器控件 - EC11旋钮 + WS2812B LED
     
-    布局（从上到下）：
-      标签
-      [旋钮]  [LED]
+    新特性：
+      - 单击（clicked）→ 循环切换3个模式（COMP / GATE / PAN）
+      - 双击（double_clicked）→ 进入翻页通道选择
+      - 旋转加速度曲线：间隔<100ms步进×6，100~300ms步进×3，>300ms步进×1
     """
 
-    rotated = pyqtSignal(int)   # 旋转信号
-    clicked = pyqtSignal()      # 点击信号
+    rotated        = pyqtSignal(int)   # 含加速度的旋转信号
+    clicked        = pyqtSignal()      # 单击（模式切换）
+    double_clicked = pyqtSignal()      # 双击（翻页入口）
 
     def __init__(self, channel_id: int, parent=None):
         super().__init__(parent)
         self.channel_id = channel_id
+        self._last_rot_ms = 0.0   # 上次旋转时间戳（毫秒）
         self._setup_ui()
-        # 默认LED为白色（激活状态）
-        self.set_led_color(LED_WHITE)
+        self.set_mode(0)          # 默认COMP模式，青色LED
 
     def _setup_ui(self):
-        """初始化UI布局"""
         layout = QVBoxLayout(self)
         layout.setContentsMargins(4, 4, 4, 4)
         layout.setSpacing(4)
         layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
 
-        # 标签
-        self.label = QLabel(f"ENC{self.channel_id + 1}")
+        # 模式标签
+        self.label = QLabel("ENC:COMP")
         self.label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.label.setStyleSheet(f"color: {TEXT_LABEL}; font-size: 10px; background: transparent;")
+        self.label.setStyleSheet(
+            f"color: {TEXT_LABEL}; font-size: 10px; background: transparent;")
         layout.addWidget(self.label)
 
         # 旋钮 + LED 横向布局
-        knob_led_layout = QHBoxLayout()
-        knob_led_layout.setContentsMargins(0, 0, 0, 0)
-        knob_led_layout.setSpacing(6)
-        knob_led_layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        row = QHBoxLayout()
+        row.setContentsMargins(0, 0, 0, 0)
+        row.setSpacing(6)
+        row.setAlignment(Qt.AlignmentFlag.AlignCenter)
 
-        # 旋钮
         self.knob = EncoderKnob()
         self.knob.rotated.connect(self._on_rotated)
-        self.knob.clicked.connect(self._on_clicked)
-        knob_led_layout.addWidget(self.knob)
+        self.knob.clicked.connect(self.clicked.emit)
+        self.knob.double_clicked.connect(self.double_clicked.emit)
+        row.addWidget(self.knob)
 
-        # LED指示灯（WS2812B）
         self.led = LedIndicator(LED_OFF)
-        self.led.setToolTip("WS2812B LED\n白色=默认 青色=EQ 黄色=PAN")
-        knob_led_layout.addWidget(self.led)
+        self.led.setToolTip(
+            "WS2812B LED\n青色=COMP  白色=GATE  黄色=PAN")
+        row.addWidget(self.led)
 
-        layout.addLayout(knob_led_layout)
+        layout.addLayout(row)
 
-        # 编码器值标签
-        self.value_label = QLabel("64")
+        # 当前参数值标签
+        self.value_label = QLabel("--")
         self.value_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.value_label.setStyleSheet(f"color: {TEXT_LABEL}; font-size: 9px; background: transparent;")
+        self.value_label.setStyleSheet(
+            f"color: {TEXT_LABEL}; font-size: 9px; background: transparent;")
         layout.addWidget(self.value_label)
 
-    def _on_rotated(self, delta: int):
-        """旋钮旋转事件"""
-        self.rotated.emit(delta)
+    def _on_rotated(self, raw_delta: int):
+        """旋转事件：应用加速度曲线后发出信号"""
+        now_ms = time.monotonic() * 1000.0
+        interval = now_ms - self._last_rot_ms
+        self._last_rot_ms = now_ms
 
-    def _on_clicked(self):
-        """旋钮点击（双击）事件"""
-        self.clicked.emit()
+        # 加速度系数
+        if interval < 100:
+            step = 6    # 快速旋转
+        elif interval < 300:
+            step = 3    # 中速旋转
+        else:
+            step = 1    # 慢速旋转
+
+        self.rotated.emit(raw_delta * step)
 
     def set_led_color(self, color: str):
-        """设置LED颜色"""
+        """直接设置LED颜色"""
         self.led.set_color(color)
 
-    def set_value_display(self, value: int):
-        """更新编码器值显示"""
-        self.value_label.setText(str(value))
+    def set_value_display(self, text: str):
+        """更新参数值标签"""
+        self.value_label.setText(str(text))
 
-    def set_mode(self, mode: str):
-        """根据编码器模式更新LED颜色"""
-        from .style import LED_WHITE, LED_CYAN, LED_YELLOW
-        color_map = {
-            "VOL": LED_WHITE,
-            "EQ": LED_CYAN,
-            "PAN": LED_YELLOW,
-        }
-        self.set_led_color(color_map.get(mode, LED_WHITE))
+    def set_mode(self, mode_idx: int):
+        """根据模式索引更新LED颜色和标签
+        
+        mode_idx: 0=COMP（青色）, 1=GATE（白色）, 2=PAN（黄色）
+        """
+        color = ENC_MODE_LED_COLORS.get(mode_idx, LED_WHITE)
+        label = ENC_MODE_LABELS.get(mode_idx, '??')
+        self.led.set_color(color)
+        self.label.setText(f"ENC:{label}")
+

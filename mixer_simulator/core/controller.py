@@ -1,295 +1,327 @@
-# core/controller.py
-# 核心控制器逻辑 - 支持144通道状态管理（雅马哈DM系列）
+# mixer_simulator/core/controller.py
+# 混音台控制器核心逻辑 - 管理5个推子条和最多144个通道的状态
 
 from PyQt6.QtCore import QObject, pyqtSignal
 
-# ---- 编码器模式定义 ----
-ENC_MODE_COMP = 0   # 压缩器阈值模式
-ENC_MODE_GATE = 1   # 噪声门阈值模式
-ENC_MODE_PAN  = 2   # 声像模式
+# ------------------------------------------------------------------ #
+# MIDI 映射常量（DM Series）
+# ------------------------------------------------------------------ #
+CC_FADER = 7        # 推子音量
+CC_COMP_THR = 18    # 压缩阈值
+CC_GATE_THR = 16    # 门限阈值
+CC_PAN = 10         # 声像
 
-ENC_MODE_NAMES  = ["COMP", "GATE", "PAN"]
-ENC_MODE_COLORS = ["#00ffff", "#ffffff", "#ffff00"]  # 青色 / 白色 / 黄色
+NOTE_MUTE_BASE = 0    # MUTE Note = NOTE_MUTE_BASE + (channel - 1)
+NOTE_SOLO_BASE = 32   # SOLO Note = NOTE_SOLO_BASE + (channel - 1)
+NOTE_SELECT_BASE = 64 # SELECT Note = NOTE_SELECT_BASE + (channel - 1)
+NOTE_DYN_BASE = 96    # DYN Note = NOTE_DYN_BASE + (channel - 1)
 
-# 最大通道数（DM7支持144个输入通道）
-MAX_CHANNELS = 144
-
-# MIDI CC编号（雅马哈DM系列）
-CC_FADER_VOLUME = 7    # 推子音量
-CC_GATE_THR     = 16   # 噪声门阈值
-CC_COMP_THR     = 18   # 压缩器阈值
-CC_PAN          = 10   # 声像
-
-# MIDI CC到dB换算基准
-MIDI_0DB_VALUE = 100   # MIDI值100 = 0 dB
-MIDI_MAX_VALUE = 127   # MIDI值127 = +6 dB
-
-
-def midi_to_db(midi_value: int) -> str:
-    """将MIDI值(0-127)转换为dB字符串显示"""
-    if midi_value == 0:
-        return "-inf"
-    elif midi_value <= MIDI_0DB_VALUE:
-        db = (midi_value / MIDI_0DB_VALUE) * 60.0 - 60.0
-        return f"{db:.1f}"
-    else:
-        db = ((midi_value - MIDI_0DB_VALUE) / (MIDI_MAX_VALUE - MIDI_0DB_VALUE)) * 6.0
-        return f"+{db:.1f}"
+# 默认通道名称列表（用于演示）
+_DEFAULT_CHANNEL_NAMES = [
+    "Kick Drm", "Snare", "Hi-Hat", "OHL", "OHR",
+    "Tom 1", "Tom 2", "Tom 3", "Bass Gtr", "Elec Gtr",
+    "Acst Gtr", "Piano", "Keys", "Synth", "Pad",
+    "Strings", "Brass 1", "Brass 2", "Sax", "Flute",
+    "Vox Lead", "Vox Bkg1", "Vox Bkg2", "Vox Harm", "Choir",
+    "FX Revrb", "FX Delay", "FX Chor", "Aux 1", "Aux 2",
+    "Aux 3", "Aux 4",
+]
 
 
-def comp_thr_to_midi(thr_db: float) -> int:
-    """COMP THR dB值(-60~0)转MIDI值(0~127)"""
-    ratio = (thr_db + 60.0) / 60.0
-    return max(0, min(127, int(ratio * 127)))
-
-
-def gate_thr_to_midi(thr_db: float) -> int:
-    """GATE THR dB值(-80~0)转MIDI值(0~127)"""
-    ratio = (thr_db + 80.0) / 80.0
-    return max(0, min(127, int(ratio * 127)))
-
-
-def pan_to_midi(pan: int) -> int:
-    """PAN值(-63~63)转MIDI值(0~127), 0=中央64"""
-    return max(0, min(127, pan + 64))
+def _default_name(ch_num: int) -> str:
+    """根据通道号返回默认通道名称（超出预设列表则使用通道号）"""
+    if 1 <= ch_num <= len(_DEFAULT_CHANNEL_NAMES):
+        return _DEFAULT_CHANNEL_NAMES[ch_num - 1]
+    return f"CH{ch_num}"
 
 
 class ChannelState:
-    """单通道状态（支持1~144个通道）"""
+    """单个通道的完整状态（CH1~CH144）"""
 
     def __init__(self, ch_num: int):
-        self.fader: int       = 100          # 推子MIDI值 0~127（100 = 0dB）
-        self.mute: bool       = False
-        self.solo: bool       = False
-        self.select: bool     = False
-        self.dyn_on: bool     = False        # 动态处理总开关
-        self.comp_thr: float  = -20.0        # 压缩器阈值 dB, -60~0
-        self.gate_thr: float  = -40.0        # 噪声门阈值 dB, -80~0
-        self.pan: int         = 0            # 声像 -63~63
-        self.name: str        = f"CH{ch_num}"  # 通道名
-        self.enc_mode: int    = ENC_MODE_COMP  # 编码器模式
+        self.ch_num = ch_num                          # 通道号 1~144
+        self.channel_name: str = _default_name(ch_num)
+        self.fader_value: int = 100                   # 推子值 0~127
+        self.mute_active: bool = False                # 静音
+        self.solo_active: bool = False                # 独奏
+        self.select_active: bool = False              # 选中
+        self.dyn_active: bool = True                  # 动态处理开关
+        self.comp_thr: float = -20.0                  # 压缩阈值 -60~0 dB
+        self.gate_thr: float = -40.0                  # 门限阈值 -80~0 dB
+        self.pan: int = 0                             # 声像 -63~63
+        self.encoder_mode_index: int = 0              # 编码器模式 0=COMP,1=GATE,2=PAN
 
-    @property
-    def fader_db(self) -> str:
-        """推子dB值字符串"""
-        return midi_to_db(self.fader)
 
-    @property
-    def enc_param_str(self) -> str:
-        """编码器当前参数显示字符串"""
-        if self.enc_mode == ENC_MODE_COMP:
-            return f"COMP THR{self.comp_thr:+.0f}dB"
-        elif self.enc_mode == ENC_MODE_GATE:
-            return f"GATE THR{self.gate_thr:+.0f}dB"
-        else:
-            if self.pan == 0:
-                pan_str = "C"
-            elif self.pan < 0:
-                pan_str = f"L{abs(self.pan)}"
-            else:
-                pan_str = f"R{self.pan}"
-            return f"PAN      {pan_str:>4}"
+class StripState:
+    """单个物理推子条的状态"""
+
+    def __init__(self, strip_id: int, initial_channel: int):
+        self.strip_id = strip_id                      # 物理条编号 0~4
+        self.current_channel: int = initial_channel  # 当前映射的通道号
+        self.page_turn_mode: bool = False             # 是否在翻页模式
+        self.page_turn_target: int = initial_channel  # 翻页模式中选中的目标通道
+
+
+# 编码器模式名称
+ENCODER_MODES = ["COMP", "GATE", "PAN"]
 
 
 class MixerController(QObject):
-    """混音控制器核心逻辑 - 管理最多144个通道，5列独立寻址"""
+    """混音台控制器 - 管理5条推子条 + 最多144个通道状态"""
 
-    # ---- 信号定义 ----
-    fader_changed           = pyqtSignal(int, int)        # (col_idx, midi_value)
-    encoder_changed         = pyqtSignal(int, int)        # (col_idx, midi_value)
-    encoder_mode_changed    = pyqtSignal(int, int)        # (col_idx, mode_index)
-    button_changed          = pyqtSignal(int, str, bool)  # (col_idx, btn_type, state)
-    midi_message_sent       = pyqtSignal(str)             # MIDI日志消息
-    channel_assignment_changed = pyqtSignal()             # 通道分配变化
+    # 推子移动信号（strip_id, midi_value 0~127）
+    fader_changed = pyqtSignal(int, int)
+    # 编码器参数变化信号（strip_id, 新参数值字符串）
+    encoder_changed = pyqtSignal(int, str)
+    # 编码器模式变化信号（strip_id, 模式名称）
+    encoder_mode_changed = pyqtSignal(int, str)
+    # 按钮状态变化信号（strip_id, 按钮类型, 状态）
+    button_changed = pyqtSignal(int, str, bool)
+    # 通道切换信号（strip_id, 旧通道, 新通道）
+    channel_switched = pyqtSignal(int, int, int)
+    # 翻页模式状态变化（strip_id, 是否进入翻页, 目标通道）
+    page_turn_mode_changed = pyqtSignal(int, bool, int)
+    # MIDI消息字符串（用于日志显示）
+    midi_message_sent = pyqtSignal(str)
+    # 通道分配概览变化
+    channel_assignment_changed = pyqtSignal()
 
-    NUM_COLUMNS = 5
+    # 默认起始通道（5条推子条）
+    _DEFAULT_CHANNELS = [1, 8, 15, 23, 32]
+    # 支持最大通道数
+    MAX_CHANNELS = 144
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        # 144个通道状态字典
-        self._channel_states: dict[int, ChannelState] = {
-            i: ChannelState(i) for i in range(1, MAX_CHANNELS + 1)
-        }
-        # 每列当前显示的通道号（1~144）
-        self.column_channels: list[int] = list(range(1, self.NUM_COLUMNS + 1))
-        self._midi_engine = None
 
-    def set_midi_engine(self, engine):
-        """注入MIDI引擎"""
-        self._midi_engine = engine
+        # 初始化所有通道状态
+        self._channels: dict[int, ChannelState] = {
+            i: ChannelState(i) for i in range(1, self.MAX_CHANNELS + 1)
+        }
+
+        # 初始化5条推子条状态
+        self._strips: list[StripState] = [
+            StripState(i, self._DEFAULT_CHANNELS[i]) for i in range(5)
+        ]
+
+        # MIDI 引擎（由外部注入）
+        self.midi_engine = None
+
+    # ------------------------------------------------------------------ #
+    # 公开只读属性
+    # ------------------------------------------------------------------ #
 
     def get_channel_state(self, ch_num: int) -> ChannelState:
-        """获取指定通道的状态"""
-        ch_num = max(1, min(MAX_CHANNELS, ch_num))
-        return self._channel_states[ch_num]
+        """获取指定通道状态，超出范围则返回临时对象"""
+        if 1 <= ch_num <= self.MAX_CHANNELS:
+            return self._channels[ch_num]
+        return ChannelState(ch_num)
 
-    def get_column_channel(self, col_idx: int) -> int:
-        """获取指定列当前显示的通道号"""
-        return self.column_channels[col_idx]
+    def get_strip_state(self, strip_id: int) -> StripState:
+        """获取推子条状态"""
+        return self._strips[strip_id]
 
-    def set_column_channel(self, col_idx: int, ch_num: int):
-        """设置指定列显示的通道号（翻页后调用）"""
-        ch_num = max(1, min(MAX_CHANNELS, ch_num))
-        self.column_channels[col_idx] = ch_num
+    def get_strip_channel(self, strip_id: int) -> int:
+        """获取推子条当前映射的通道号"""
+        return self._strips[strip_id].current_channel
+
+    def get_all_strip_channels(self) -> list[int]:
+        """返回5条推子条当前映射的通道号列表"""
+        return [s.current_channel for s in self._strips]
+
+    # ------------------------------------------------------------------ #
+    # 推子操作
+    # ------------------------------------------------------------------ #
+
+    def on_fader_moved(self, strip_id: int, value: int):
+        """处理推子移动（value: 0~127）"""
+        strip = self._strips[strip_id]
+        ch_state = self._channels[strip.current_channel]
+        ch_state.fader_value = value
+        # 发送 MIDI CC7（音量）
+        self._send_cc(strip.current_channel, CC_FADER, value)
+        self.fader_changed.emit(strip_id, value)
+
+    # ------------------------------------------------------------------ #
+    # 编码器操作
+    # ------------------------------------------------------------------ #
+
+    def on_encoder_rotated(self, strip_id: int, delta: int):
+        """处理编码器旋转（delta 已含加速步长）"""
+        strip = self._strips[strip_id]
+
+        # 翻页模式：改变目标通道选择（delta转为整数步进）
+        if strip.page_turn_mode:
+            new_target = max(1, min(self.MAX_CHANNELS,
+                                    strip.page_turn_target + int(round(delta))))
+            strip.page_turn_target = new_target
+            self.page_turn_mode_changed.emit(strip_id, True, new_target)
+            return
+
+        # 正常模式：调整对应参数
+        ch_state = self._channels[strip.current_channel]
+        mode_idx = ch_state.encoder_mode_index
+
+        if mode_idx == 0:
+            # COMP 模式：调整压缩阈值
+            ch_state.comp_thr = max(-60.0, min(0.0, ch_state.comp_thr + delta * 0.5))
+            val_str = f"{ch_state.comp_thr:.1f}dB"
+            midi_val = int((ch_state.comp_thr + 60) / 60 * 127)
+            self._send_cc(strip.current_channel, CC_COMP_THR, max(0, min(127, midi_val)))
+        elif mode_idx == 1:
+            # GATE 模式：调整门限阈值
+            ch_state.gate_thr = max(-80.0, min(0.0, ch_state.gate_thr + delta * 0.5))
+            val_str = f"{ch_state.gate_thr:.1f}dB"
+            midi_val = int((ch_state.gate_thr + 80) / 80 * 127)
+            self._send_cc(strip.current_channel, CC_GATE_THR, max(0, min(127, midi_val)))
+        else:
+            # PAN 模式：调整声像（整数步进）
+            ch_state.pan = max(-63, min(63, ch_state.pan + int(delta)))
+            if ch_state.pan < 0:
+                val_str = f"L{abs(ch_state.pan)}"
+            elif ch_state.pan > 0:
+                val_str = f"R{ch_state.pan}"
+            else:
+                val_str = "C"
+            midi_val = ch_state.pan + 64
+            self._send_cc(strip.current_channel, CC_PAN, max(0, min(127, midi_val)))
+
+        self.encoder_changed.emit(strip_id, val_str)
+
+    def on_encoder_clicked(self, strip_id: int):
+        """编码器单击：翻页模式下确认切换，否则循环切换编码器模式"""
+        strip = self._strips[strip_id]
+
+        if strip.page_turn_mode:
+            # 确认通道切换
+            self._switch_channel(strip_id, strip.page_turn_target)
+            strip.page_turn_mode = False
+            self.page_turn_mode_changed.emit(strip_id, False, strip.current_channel)
+            return
+
+        # 循环 COMP→GATE→PAN
+        ch_state = self._channels[strip.current_channel]
+        ch_state.encoder_mode_index = (ch_state.encoder_mode_index + 1) % 3
+        mode_name = ENCODER_MODES[ch_state.encoder_mode_index]
+        self.encoder_mode_changed.emit(strip_id, mode_name)
+
+    def on_encoder_double_clicked(self, strip_id: int):
+        """编码器双击：进入/退出翻页模式"""
+        strip = self._strips[strip_id]
+        if strip.page_turn_mode:
+            # 退出翻页模式（取消）
+            strip.page_turn_mode = False
+            self.page_turn_mode_changed.emit(strip_id, False, strip.current_channel)
+        else:
+            # 进入翻页模式
+            strip.page_turn_mode = True
+            strip.page_turn_target = strip.current_channel
+            self.page_turn_mode_changed.emit(strip_id, True, strip.page_turn_target)
+
+    # ------------------------------------------------------------------ #
+    # 按钮操作
+    # ------------------------------------------------------------------ #
+
+    def on_mute_clicked(self, strip_id: int):
+        """MUTE 按钮点击（切换）
+        
+        注：MIDI Note编号 = NOTE_MUTE_BASE + (ch_num - 1)，
+        对于超过127的值取模128（MIDI标准限制为0~127）。
+        在DM3（32ch）范围内无冲突；DM7高通道存在理论重叠，
+        但实际控制中依赖SysEx扩展而非Note映射。
+        """
+        ch_state = self._get_strip_channel_state(strip_id)
+        ch_state.mute_active = not ch_state.mute_active
+        note = (NOTE_MUTE_BASE + ch_state.ch_num - 1) % 128
+        if ch_state.mute_active:
+            self._send_note_on(ch_state.ch_num, note)
+        else:
+            self._send_note_off(ch_state.ch_num, note)
+        self.button_changed.emit(strip_id, "MUTE", ch_state.mute_active)
+
+    def on_solo_clicked(self, strip_id: int):
+        """SOLO 按钮点击（切换）"""
+        ch_state = self._get_strip_channel_state(strip_id)
+        ch_state.solo_active = not ch_state.solo_active
+        note = (NOTE_SOLO_BASE + ch_state.ch_num - 1) % 128
+        if ch_state.solo_active:
+            self._send_note_on(ch_state.ch_num, note)
+        else:
+            self._send_note_off(ch_state.ch_num, note)
+        self.button_changed.emit(strip_id, "SOLO", ch_state.solo_active)
+
+    def on_select_clicked(self, strip_id: int):
+        """SELECT 按钮点击（同一时刻只有一个条可以被选中）"""
+        # 先取消所有其他条的 SELECT 状态
+        target_ch = self._strips[strip_id].current_channel
+        for i, strip in enumerate(self._strips):
+            ch = self._channels[strip.current_channel]
+            if i != strip_id and ch.select_active:
+                ch.select_active = False
+                self.button_changed.emit(i, "SELECT", False)
+
+        ch_state = self._channels[target_ch]
+        ch_state.select_active = not ch_state.select_active
+        note = (NOTE_SELECT_BASE + ch_state.ch_num - 1) % 128
+        if ch_state.select_active:
+            self._send_note_on(ch_state.ch_num, note)
+        else:
+            self._send_note_off(ch_state.ch_num, note)
+        self.button_changed.emit(strip_id, "SELECT", ch_state.select_active)
+
+    def on_dyn_clicked(self, strip_id: int):
+        """DYN 按钮点击（切换）"""
+        ch_state = self._get_strip_channel_state(strip_id)
+        ch_state.dyn_active = not ch_state.dyn_active
+        note = (NOTE_DYN_BASE + ch_state.ch_num - 1) % 128
+        if ch_state.dyn_active:
+            self._send_note_on(ch_state.ch_num, note)
+        else:
+            self._send_note_off(ch_state.ch_num, note)
+        self.button_changed.emit(strip_id, "DYN", ch_state.dyn_active)
+
+    # ------------------------------------------------------------------ #
+    # 内部辅助方法
+    # ------------------------------------------------------------------ #
+
+    def _get_strip_channel_state(self, strip_id: int) -> ChannelState:
+        """获取推子条当前映射通道的状态"""
+        return self._channels[self._strips[strip_id].current_channel]
+
+    def _switch_channel(self, strip_id: int, new_ch: int):
+        """切换推子条到新通道，并触发推子校准动画"""
+        strip = self._strips[strip_id]
+        old_ch = strip.current_channel
+        if old_ch == new_ch:
+            return
+        strip.current_channel = new_ch
+        self.channel_switched.emit(strip_id, old_ch, new_ch)
         self.channel_assignment_changed.emit()
 
-    # ----------------------------------------------------------------
-    # 推子控制
-    # ----------------------------------------------------------------
-    def on_fader_moved(self, col_idx: int, midi_value: int):
-        """推子移动处理"""
-        ch_num = self.column_channels[col_idx]
-        ch = self._channel_states[ch_num]
-        ch.fader = midi_value
-        # MIDI CC7, 通道号 = (ch_num-1)%16+1 (映射到1~16)
-        midi_ch = (ch_num - 1) % 16 + 1
-        db_str = midi_to_db(midi_value)
-        msg = (f"CC  列{col_idx + 1}→CH{ch_num} | "
-               f"CC#{CC_FADER_VOLUME:02d} = {midi_value:3d} ({db_str} dB)")
-        self._send_cc(midi_ch, CC_FADER_VOLUME, midi_value, msg)
-        self.fader_changed.emit(col_idx, midi_value)
+    def _midi_channel(self, ch_num: int) -> int:
+        """计算 MIDI 通道号（1~16循环）"""
+        return (ch_num - 1) % 16 + 1
 
-    # ----------------------------------------------------------------
-    # 编码器控制
-    # ----------------------------------------------------------------
-    def on_encoder_rotated(self, col_idx: int, delta: int):
-        """编码器旋转处理（delta已包含加速度系数）"""
-        ch_num = self.column_channels[col_idx]
-        ch = self._channel_states[ch_num]
-        midi_ch = (ch_num - 1) % 16 + 1
-
-        if ch.enc_mode == ENC_MODE_COMP:
-            # 压缩器阈值 -60~0 dB
-            ch.comp_thr = max(-60.0, min(0.0, ch.comp_thr + delta))
-            midi_val = comp_thr_to_midi(ch.comp_thr)
-            msg = (f"CC  列{col_idx + 1}→CH{ch_num} | "
-                   f"CC#{CC_COMP_THR:02d} = {midi_val:3d} "
-                   f"(COMP THR {ch.comp_thr:+.1f}dB)")
-            self._send_cc(midi_ch, CC_COMP_THR, midi_val, msg)
-
-        elif ch.enc_mode == ENC_MODE_GATE:
-            # 噪声门阈值 -80~0 dB
-            ch.gate_thr = max(-80.0, min(0.0, ch.gate_thr + delta))
-            midi_val = gate_thr_to_midi(ch.gate_thr)
-            msg = (f"CC  列{col_idx + 1}→CH{ch_num} | "
-                   f"CC#{CC_GATE_THR:02d} = {midi_val:3d} "
-                   f"(GATE THR {ch.gate_thr:+.1f}dB)")
-            self._send_cc(midi_ch, CC_GATE_THR, midi_val, msg)
-
-        else:  # ENC_MODE_PAN
-            # 声像 -63~63
-            ch.pan = max(-63, min(63, ch.pan + delta))
-            midi_val = pan_to_midi(ch.pan)
-            pan_str = "C" if ch.pan == 0 else (
-                f"L{abs(ch.pan)}" if ch.pan < 0 else f"R{ch.pan}")
-            msg = (f"CC  列{col_idx + 1}→CH{ch_num} | "
-                   f"CC#{CC_PAN:02d} = {midi_val:3d} (PAN {pan_str})")
-            self._send_cc(midi_ch, CC_PAN, midi_val, msg)
-
-        self.encoder_changed.emit(col_idx, midi_val)
-
-    def on_encoder_clicked(self, col_idx: int):
-        """编码器单击 - 循环切换3个模式"""
-        ch_num = self.column_channels[col_idx]
-        ch = self._channel_states[ch_num]
-        ch.enc_mode = (ch.enc_mode + 1) % 3
-        mode_name = ENC_MODE_NAMES[ch.enc_mode]
-        msg = f"ENC 列{col_idx + 1}→CH{ch_num} | 模式切换 → {mode_name}"
+    def _send_cc(self, ch_num: int, cc: int, value: int):
+        """发送 MIDI CC 消息"""
+        midi_ch = self._midi_channel(ch_num)
+        msg = f"CC ch{midi_ch} cc{cc}={value} (源通道CH{ch_num})"
         self.midi_message_sent.emit(msg)
-        self.encoder_mode_changed.emit(col_idx, ch.enc_mode)
+        if self.midi_engine:
+            self.midi_engine.send_cc(midi_ch, cc, value)
 
-    # ----------------------------------------------------------------
-    # 按键控制
-    # ----------------------------------------------------------------
-    def on_mute_clicked(self, col_idx: int):
-        """MUTE按键（Toggle，红色LED）"""
-        ch_num = self.column_channels[col_idx]
-        ch = self._channel_states[ch_num]
-        ch.mute = not ch.mute
-        note = (ch_num - 1) % 128
-        velocity = 127 if ch.mute else 0
-        msg = (f"NOTE 列{col_idx + 1}→CH{ch_num} | "
-               f"MUTE Note#{note} {'ON ' if ch.mute else 'OFF'} ({velocity})")
-        self._send_note(1, note, velocity, msg)
-        self.button_changed.emit(col_idx, "mute", ch.mute)
+    def _send_note_on(self, ch_num: int, note: int):
+        """发送 MIDI Note On"""
+        midi_ch = self._midi_channel(ch_num)
+        msg = f"NoteOn ch{midi_ch} note{note} vel127 (源通道CH{ch_num})"
+        self.midi_message_sent.emit(msg)
+        if self.midi_engine:
+            self.midi_engine.send_note_on(midi_ch, note, 127)
 
-    def on_solo_clicked(self, col_idx: int):
-        """SOLO按键（Toggle，蓝色LED）"""
-        ch_num = self.column_channels[col_idx]
-        ch = self._channel_states[ch_num]
-        ch.solo = not ch.solo
-        note = (ch_num - 1) % 128
-        velocity = 127 if ch.solo else 0
-        msg = (f"NOTE 列{col_idx + 1}→CH{ch_num} | "
-               f"SOLO Note#{note} {'ON ' if ch.solo else 'OFF'} ({velocity})")
-        self._send_note(2, note, velocity, msg)
-        self.button_changed.emit(col_idx, "solo", ch.solo)
-
-    def on_dyn_clicked(self, col_idx: int):
-        """DYN ON/OFF按键（Toggle，橙色LED）- 动态处理总开关"""
-        ch_num = self.column_channels[col_idx]
-        ch = self._channel_states[ch_num]
-        ch.dyn_on = not ch.dyn_on
-        note = (ch_num - 1) % 128
-        velocity = 127 if ch.dyn_on else 0
-        msg = (f"NOTE 列{col_idx + 1}→CH{ch_num} | "
-               f"DYN  Note#{note} {'ON ' if ch.dyn_on else 'OFF'} ({velocity})")
-        self._send_note(4, note, velocity, msg)
-        self.button_changed.emit(col_idx, "dyn", ch.dyn_on)
-
-    def on_sel_clicked(self, col_idx: int):
-        """SEL按键（白色LED，同时只能一列激活）"""
-        ch_num = self.column_channels[col_idx]
-        ch = self._channel_states[ch_num]
-        was_active = ch.select
-
-        # 取消所有列的SELECT状态
-        for i in range(self.NUM_COLUMNS):
-            other_ch_num = self.column_channels[i]
-            other_ch = self._channel_states[other_ch_num]
-            if other_ch.select:
-                other_ch.select = False
-                self.button_changed.emit(i, "sel", False)
-
-        # 若之前未激活，则激活当前列
-        if not was_active:
-            ch.select = True
-            note = (ch_num - 1) % 128
-            msg = (f"NOTE 列{col_idx + 1}→CH{ch_num} | "
-                   f"SEL  Note#{note} ON  (127)")
-            self._send_note(3, note, 127, msg)
-            self.button_changed.emit(col_idx, "sel", True)
-        else:
-            note = (ch_num - 1) % 128
-            msg = (f"NOTE 列{col_idx + 1}→CH{ch_num} | "
-                   f"SEL  Note#{note} OFF (0)")
-            self._send_note(3, note, 0, msg)
-
-    # ----------------------------------------------------------------
-    # 内部MIDI发送辅助
-    # ----------------------------------------------------------------
-    def _send_cc(self, midi_channel: int, cc: int, value: int, log_msg: str):
-        """发送MIDI CC消息并记录日志"""
-        if self._midi_engine:
-            self._midi_engine.send_cc(midi_channel, cc, value)
-        self.midi_message_sent.emit(log_msg)
-
-    def _send_note(self, midi_channel: int, note: int,
-                   velocity: int, log_msg: str):
-        """发送MIDI Note消息并记录日志"""
-        if self._midi_engine:
-            if velocity > 0:
-                self._midi_engine.send_note_on(midi_channel, note, velocity)
-            else:
-                self._midi_engine.send_note_off(midi_channel, note)
-        self.midi_message_sent.emit(log_msg)
-
-    # ----------------------------------------------------------------
-    # 向后兼容属性
-    # ----------------------------------------------------------------
-    @property
-    def channels(self) -> list[ChannelState]:
-        """按列索引返回当前通道状态列表（兼容旧接口）"""
-        return [self._channel_states[self.column_channels[i]]
-                for i in range(self.NUM_COLUMNS)]
-
+    def _send_note_off(self, ch_num: int, note: int):
+        """发送 MIDI Note Off"""
+        midi_ch = self._midi_channel(ch_num)
+        msg = f"NoteOff ch{midi_ch} note{note} vel0 (源通道CH{ch_num})"
+        self.midi_message_sent.emit(msg)
+        if self.midi_engine:
+            self.midi_engine.send_note_off(midi_ch, note, 0)

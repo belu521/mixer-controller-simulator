@@ -132,7 +132,7 @@ void update() {
             if (abs(err) <= SOFT_ZONE) {
                 // 减速区：按比例降低 PWM
                 pwm = (uint8_t)((uint32_t)PWM_MAX * abs(err) / SOFT_ZONE);
-                if (pwm < 60) pwm = 60;  // 最低保持 60 防止卡顿
+            if (pwm < PWM_MIN_SOFT) pwm = PWM_MIN_SOFT;  // 最低保持防止卡顿
             } else {
                 pwm = PWM_MAX;
             }

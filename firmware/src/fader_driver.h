@@ -10,6 +10,9 @@ namespace FaderDriver {
 // PWM 上限（0~255），默认 220（=约 86%，留余量避免过热）
 constexpr uint8_t PWM_MAX = 220;
 
+// 接近目标时的最低 PWM（防止卡顿）
+constexpr uint8_t PWM_MIN_SOFT = 60;
+
 // 死区（ADC 量化步，等价 MIDI 值 ±2）
 constexpr uint8_t DEAD_ZONE = 2;
 

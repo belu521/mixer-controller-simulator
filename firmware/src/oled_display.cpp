@@ -52,12 +52,16 @@ static void midiToDb(uint8_t midi, char* buf, uint8_t bufLen) {
         buf[bufLen - 1] = '\0';
         return;
     }
-    // 线性映射：127→0dB, 100→-10dB
+    // 线性映射：127→+13.5dB, 100→0.0dB, 0→-inf
     // db = (midi - 100) * 0.5
-    float db = (float)(midi - 100) * 0.5f;
+    // 对应 fader_widget.py 第 20~26 行
     if (midi == 100) {
         strncpy(buf, "0.0dB", bufLen);
-    } else if (db >= 0.0f) {
+        buf[bufLen - 1] = '\0';
+        return;
+    }
+    float db = (float)((int)midi - 100) * 0.5f;
+    if (db > 0.0f) {
         snprintf(buf, bufLen, "+%.1fdB", (double)db);
     } else {
         snprintf(buf, bufLen, "%.1fdB", (double)db);

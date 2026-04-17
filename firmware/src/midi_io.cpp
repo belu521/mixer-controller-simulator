@@ -54,6 +54,7 @@ void sendNoteOff(uint8_t chNum, uint8_t note) {
 
 // ──────────────────────────────────────────────────────────
 // update() — 处理接收到的 MIDI 消息（在 loop() 中调用）
+// Teensy USB MIDI 消息类型值（USB MIDI class 静态常量）
 // ──────────────────────────────────────────────────────────
 void update() {
     while (usbMIDI.read()) {
@@ -62,23 +63,17 @@ void update() {
         uint8_t d1   = usbMIDI.getData1();
         uint8_t d2   = usbMIDI.getData2();
 
-        switch (type) {
-            case usbMIDI.ControlChange:
-                if (_cbCc) _cbCc(ch, d1, d2);
-                break;
-            case usbMIDI.NoteOn:
-                if (d2 > 0) {
-                    if (_cbNoteOn) _cbNoteOn(ch, d1, d2);
-                } else {
-                    // velocity=0 视为 NoteOff
-                    if (_cbNoteOff) _cbNoteOff(ch, d1, 0);
-                }
-                break;
-            case usbMIDI.NoteOff:
-                if (_cbNoteOff) _cbNoteOff(ch, d1, d2);
-                break;
-            default:
-                break;
+        if (type == usbMIDI.ControlChange) {
+            if (_cbCc) _cbCc(ch, d1, d2);
+        } else if (type == usbMIDI.NoteOn) {
+            if (d2 > 0) {
+                if (_cbNoteOn) _cbNoteOn(ch, d1, d2);
+            } else {
+                // velocity=0 视为 NoteOff
+                if (_cbNoteOff) _cbNoteOff(ch, d1, 0);
+            }
+        } else if (type == usbMIDI.NoteOff) {
+            if (_cbNoteOff) _cbNoteOff(ch, d1, d2);
         }
     }
 }

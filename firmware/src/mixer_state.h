@@ -55,7 +55,7 @@ struct StripState {
     uint8_t stripId;           // 物理条编号 0~4
     uint8_t currentChannel;    // 当前映射通道号 1~144
     bool    pageTurnMode;      // 是否在翻页模式
-    uint8_t pageTurnTarget;    // 翻页模式中选中的目标通道（1~144，但实际存储为 uint8_t 限制 255，通道最多 144 OK）
+    uint8_t pageTurnTarget;    // 翻页模式中选中的目标通道（有效范围 1~144）
 };
 
 // ──────────────────────────────────────────────────────────

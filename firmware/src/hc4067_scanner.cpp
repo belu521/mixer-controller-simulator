@@ -47,7 +47,15 @@ void begin() {
     // 初始化状态
     for (uint8_t c = 0; c < NUM_CHIPS; c++) {
         for (uint8_t ch = 0; ch < NUM_CHANNELS; ch++) {
-            _chState[c][ch] = { false, false, 0, 0, false, false, 0, 0 };
+            ChState& s      = _chState[c][ch];
+            s.raw           = false;
+            s.debounced     = false;
+            s.debounceCount = 0;
+            s.pressTime     = 0;
+            s.pressed       = false;
+            s.longSent      = false;
+            s.lastClickTime = 0;
+            s.clickCount    = 0;
             _rawState[c][ch] = false;
         }
     }

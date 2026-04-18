@@ -1,13 +1,16 @@
 #pragma once
 // firmware/src/hc4067_scanner.h
-// HC4067 × 3 多路复用器扫描接口
+// HC4067 × NUM_HC4067 多路复用器扫描接口
 // 扫描频率 ~500Hz，提供单击/双击/长按事件检测
+// 最终硬件安装 2 片（HC4067_1 + HC4067_2），HC4067_3 已取消
 
 #include <Arduino.h>
 
 namespace HC4067Scanner {
 
-constexpr uint8_t NUM_CHIPS    = 3;   // HC4067 数量
+// 编译期常量：当前安装的 HC4067 数量（可扩展，最大 = 硬件 SIG 脚数量）
+constexpr uint8_t NUM_HC4067   = 2;   // 最终硬件：HC4067_1 (Pin11) + HC4067_2 (Pin12)
+constexpr uint8_t NUM_CHIPS    = NUM_HC4067;  // 别名，保持内部一致
 constexpr uint8_t NUM_CHANNELS = 16;  // 每颗 16 路
 
 // 事件类型

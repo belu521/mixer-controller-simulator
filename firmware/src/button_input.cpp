@@ -19,8 +19,8 @@
 // │  C3  → Strip4 SEL   C4  → Strip4 DYN                 │
 // │  C5  → Strip5 MUTE  C6  → Strip5 SOLO                │
 // │  C7  → Strip5 SEL   C8  → Strip5 DYN                 │
-// │  C9~C15 空置                                          │
-// │ HC4067_3 (SIG=Pin24) — 全部备用，回调钩子预留          │
+// │  C9~C15 预留备用，PCB 上不焊按键，固件不扫描（直接忽略）  │
+// │ HC4067_3 — 已从最终硬件移除（不安装），固件已清理        │
 // └───────────────────────────────────────────────────────┘
 
 #include "button_input.h"
@@ -87,17 +87,8 @@ static void onHC4067Event(uint8_t chip, uint8_t ch, HC4067Scanner::Event ev) {
         if (ch == 6)  { MixerState::onSoloClicked(4);   return; }
         if (ch == 7)  { MixerState::onSelectClicked(4); return; }
         if (ch == 8)  { MixerState::onDynClicked(4);    return; }
-        // C9~C15 空置（忽略）
-    }
-
-    // ──────────────────────────────────────────
-    // HC4067_3：全部备用 — 预留钩子（将来扩展用）
-    // 将来直接在此添加 case 即可，不需要改其他文件
-    // ──────────────────────────────────────────
-    if (chip == 2) {
-        // 将来扩展用：ch 0~15 均备用
-        (void)ch;
-        (void)ev;
+        // C9~C15 预留备用通道（PCB 上不焊按键，直接忽略，不触发任何回调）
+        // reserved for future expansion: add cases here if buttons 21~25 are ever populated
     }
 }
 

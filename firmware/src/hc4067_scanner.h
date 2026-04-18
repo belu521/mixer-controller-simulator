@@ -10,7 +10,7 @@ namespace HC4067Scanner {
 
 // 编译期常量：当前安装的 HC4067 数量（可扩展，最大 = 硬件 SIG 脚数量）
 constexpr uint8_t NUM_HC4067   = 2;   // 最终硬件：HC4067_1 (Pin11) + HC4067_2 (Pin12)
-constexpr uint8_t NUM_CHIPS    = NUM_HC4067;  // 别名，保持内部一致
+constexpr uint8_t NUM_CHIPS    = NUM_HC4067;  // 内部使用别名（等价 NUM_HC4067，保持代码一致性）
 constexpr uint8_t NUM_CHANNELS = 16;  // 每颗 16 路
 
 // 事件类型

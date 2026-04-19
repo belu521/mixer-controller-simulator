@@ -86,13 +86,13 @@ constexpr uint8_t HC4067_3_SIG = 24;  // HC4067_3 信号输出（全部备用）
 constexpr uint8_t HC4067_SIG_PINS[3] = { HC4067_1_SIG, HC4067_2_SIG, HC4067_3_SIG };
 
 // ─────────────────────────────────────────────────────
-// I2C（TCA9548A + OLED × 5）
+// I2C（TCA9548A + SSD1315 OLED × 5）
 // ─────────────────────────────────────────────────────
 constexpr uint8_t I2C_SDA = 18;  // I2C SDA（4.7kΩ 上拉至 3.3V）
 constexpr uint8_t I2C_SCL = 19;  // I2C SCL（4.7kΩ 上拉至 3.3V）
 
 constexpr uint8_t TCA9548A_ADDR = 0x70;  // TCA9548A I2C 地址
-constexpr uint8_t OLED_ADDR     = 0x3C;  // SSD1306 I2C 地址
+constexpr uint8_t OLED_ADDR     = 0x3C;  // SSD1315 I2C 地址（兼容 SSD1306）
 
 // ─────────────────────────────────────────────────────
 // WS2812B LED × 25

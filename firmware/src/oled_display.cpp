@@ -93,7 +93,7 @@ static void applySsd1315Init(Adafruit_SSD1306& d) {
     // 4) 预充电周期
     //    高 4 位 = Phase 2（DCLK 数），低 4 位 = Phase 1
     d.ssd1306_command(SSD1306_SETPRECHARGE);       // 0xD9
-    d.ssd1306_command(0x25);                       // SSD1315 推荐：Ph1=5, Ph2=2
+    d.ssd1306_command(0x25);                       // SSD1315 推荐：高4位=Ph2=2, 低4位=Ph1=5
 
     // 5) VCOMH 反选电压
     d.ssd1306_command(SSD1306_SETVCOMDETECT);      // 0xDB

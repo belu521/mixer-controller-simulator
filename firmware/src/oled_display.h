@@ -1,6 +1,7 @@
 #pragma once
 // firmware/src/oled_display.h
-// OLED × 5 显示接口（SSD1306 0x3C，经 TCA9548A 0x70）
+// OLED × 5 显示接口（SSD1315 0x3C，经 TCA9548A 0x70）
+// 注意：实际芯片为 SSD1315，使用 Adafruit_SSD1306 库 + 专用初始化补丁
 // 实现正常页面 + CH BANK 翻页页面
 
 #include <Arduino.h>
@@ -8,7 +9,7 @@
 
 namespace OledDisplay {
 
-// 初始化（Wire + TCA9548A + 5 块 SSD1306）
+// 初始化（Wire + TCA9548A + 5 块 SSD1315，含 SSD1315 专用寄存器补丁）
 void begin();
 
 // 周期更新（仅在状态变化时刷新对应屏）

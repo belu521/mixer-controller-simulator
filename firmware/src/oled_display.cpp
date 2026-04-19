@@ -1,7 +1,9 @@
 // firmware/src/oled_display.cpp
 // OLED 显示实现
 // - TCA9548A I2C 多路复用（0x70）
-// - 5 块 SSD1306 128×64（共享 Wire，分通道访问）
+// - 5 块 SSD1315 128×64（共享 Wire，分通道访问）
+//   注意：实际芯片为 SSD1315（兼容 SSD1306），使用 Adafruit_SSD1306 库驱动，
+//   但 begin() 后需要补发 SSD1315 专用的电荷泵 / 时序寄存器以避免闪屏。
 // - 正常页面 + CH BANK 翻页页面
 
 #include "oled_display.h"
@@ -20,7 +22,8 @@ constexpr uint8_t OLED_W   = 128;
 constexpr uint8_t OLED_H   = 64;
 constexpr int8_t  OLED_RST = -1;   // 无硬件复位脚（使用软复位）
 
-// 5 块 SSD1306 实例（共享 Wire，由 TCA9548A 通道选择）
+// 5 块 SSD1315 实例（共享 Wire，由 TCA9548A 通道选择）
+// 注意：使用 Adafruit_SSD1306 库驱动 SSD1315，begin() 后需补发 SSD1315 寄存器
 static Adafruit_SSD1306 _disp[5] = {
     Adafruit_SSD1306(OLED_W, OLED_H, &Wire, OLED_RST),
     Adafruit_SSD1306(OLED_W, OLED_H, &Wire, OLED_RST),
@@ -69,7 +72,39 @@ static void midiToDb(uint8_t midi, char* buf, uint8_t bufLen) {
 }
 
 // ──────────────────────────────────────────────────────────
-// begin() — 初始化 Wire + TCA9548A + 5 块 OLED
+// SSD1315 专用初始化补丁
+// Adafruit_SSD1306::begin() 发送的是 SSD1306 电荷泵命令 (0x8D, 0x14)，
+// 但 SSD1315 使用不同的内部 DC-DC 使能寄存器 (0xAD, 0x8A)。
+// 如果不补发这些命令，SSD1315 屏幕会闪烁或亮度不稳。
+// ──────────────────────────────────────────────────────────
+static void applySsd1315Init(Adafruit_SSD1306& d) {
+    // 1) 关闭显示（操作寄存器时避免抖动）
+    d.ssd1306_command(SSD1306_DISPLAYOFF);        // 0xAE
+
+    // 2) SSD1315 内部 DC-DC 电荷泵使能（替代 SSD1306 的 0x8D/0x14）
+    d.ssd1306_command(0xAD);                      // Set DC-DC
+    d.ssd1306_command(0x8A);                      // DC-DC ON (SSD1315)
+
+    // 3) 显示时钟分频 & 振荡频率
+    //    高 4 位 = 振荡频率（0x8 = 默认），低 4 位 = 分频比 - 1
+    d.ssd1306_command(SSD1306_SETDISPLAYCLOCKDIV); // 0xD5
+    d.ssd1306_command(0x80);                       // 默认值
+
+    // 4) 预充电周期
+    //    高 4 位 = Phase 2（DCLK 数），低 4 位 = Phase 1
+    d.ssd1306_command(SSD1306_SETPRECHARGE);       // 0xD9
+    d.ssd1306_command(0x25);                       // SSD1315 推荐：Ph1=5, Ph2=2
+
+    // 5) VCOMH 反选电压
+    d.ssd1306_command(SSD1306_SETVCOMDETECT);      // 0xDB
+    d.ssd1306_command(0x20);                       // ≈ 0.77×Vcc
+
+    // 6) 重新打开显示
+    d.ssd1306_command(SSD1306_DISPLAYON);          // 0xAF
+}
+
+// ──────────────────────────────────────────────────────────
+// begin() — 初始化 Wire + TCA9548A + 5 块 SSD1315 OLED
 // ──────────────────────────────────────────────────────────
 void begin() {
     Wire.begin();
@@ -82,12 +117,14 @@ void begin() {
             Serial.print(i + 1);
             Serial.println(" init failed");
         } else {
+            // 补发 SSD1315 专用寄存器（修复闪屏）
+            applySsd1315Init(_disp[i]);
             _disp[i].clearDisplay();
             _disp[i].setTextColor(SSD1306_WHITE);
             _disp[i].display();
         }
     }
-    Serial.println("[OledDisplay] all OLEDs initialized");
+    Serial.println("[OledDisplay] all SSD1315 OLEDs initialized");
 }
 
 // ──────────────────────────────────────────────────────────

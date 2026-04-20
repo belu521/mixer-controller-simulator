@@ -72,7 +72,8 @@ constexpr uint8_t ENC_A_PINS[5] = { ENC1_A, ENC2_A, ENC3_A, ENC4_A, ENC5_A };
 constexpr uint8_t ENC_B_PINS[5] = { ENC1_B, ENC2_B, ENC3_B, ENC4_B, ENC5_B };
 
 // ─────────────────────────────────────────────────────
-// HC4067 × 3（16路多路复用器，共享 S0~S3 选择脚）
+// HC4067 × 2（16路多路复用器，共享 S0~S3 选择脚）
+// HC4067_3 已从最终硬件移除，不焊接
 // ─────────────────────────────────────────────────────
 constexpr uint8_t HC4067_S0 = 26;   // 共享选择脚 S0（所有 HC4067 共用）
 constexpr uint8_t HC4067_S1 = 27;   // 共享选择脚 S1
@@ -81,9 +82,8 @@ constexpr uint8_t HC4067_S3 = 29;   // 共享选择脚 S3
 
 constexpr uint8_t HC4067_1_SIG = 11;  // HC4067_1 信号输出（编码器按键 + Strip1~3 按钮）
 constexpr uint8_t HC4067_2_SIG = 12;  // HC4067_2 信号输出（Strip3 DYN + Strip4~5 按钮）
-constexpr uint8_t HC4067_3_SIG = 24;  // HC4067_3 信号输出（全部备用）
 
-constexpr uint8_t HC4067_SIG_PINS[3] = { HC4067_1_SIG, HC4067_2_SIG, HC4067_3_SIG };
+constexpr uint8_t HC4067_SIG_PINS[2] = { HC4067_1_SIG, HC4067_2_SIG };
 
 // ─────────────────────────────────────────────────────
 // I2C（TCA9548A + SSD1315 OLED × 5）

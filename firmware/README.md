@@ -117,6 +117,8 @@ pio run --target upload
 
 详见 [`HARDWARE.md`](HARDWARE.md)。
 
+> ⚠️ **装配前必读**：上电前请务必确认 [`HARDWARE.md` 装配前必读](HARDWARE.md#37-️-装配前必读)中的 **3 项必做手动操作**（L2 短接、TB6612 #3 B 通道飞线、HC4067_2 备用焊位不焊）。
+
 ## Python 模拟器对照
 
 详见 [`PYTHON_PARITY.md`](PYTHON_PARITY.md)。

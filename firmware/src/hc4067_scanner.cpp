@@ -1,5 +1,5 @@
 // firmware/src/hc4067_scanner.cpp
-// HC4067 × 3 扫描实现
+// HC4067 × NUM_HC4067 扫描实现（最终硬件：2 片）
 // - 共享 S0~S3 选择脚，各芯片独立 SIG 引脚
 // - 扫描间隔 ~2ms（每通道 ≥ 5µs 稳定时间）
 // - 单击/双击/长按状态机（每路独立）
@@ -39,7 +39,10 @@ void begin() {
     pinMode(PinConfig::HC4067_S2, OUTPUT);
     pinMode(PinConfig::HC4067_S3, OUTPUT);
 
-    // SIG 引脚 → 输入（按键对地，上拉读高=释放）
+    // SIG 引脚 → 输入上拉
+    // ⚠️ 必须使用 INPUT_PULLUP：按键扫描端没有外部上拉电阻，
+    //    依赖 Teensy 内部上拉（审查确认通过软件解决）
+    // reserved for future expansion：若增加芯片，在 pin_config.h 中添加 SIG 引脚即可
     for (uint8_t c = 0; c < NUM_CHIPS; c++) {
         pinMode(PinConfig::HC4067_SIG_PINS[c], INPUT_PULLUP);
     }
@@ -62,7 +65,7 @@ void begin() {
 }
 
 // ──────────────────────────────────────────────────────────
-// 扫描单次（选择通道 ch，读取所有 3 颗芯片）
+// 扫描单次（选择通道 ch，读取所有 NUM_HC4067 颗芯片）
 // ──────────────────────────────────────────────────────────
 static void scanChannel(uint8_t ch) {
     // 设置 S0~S3
@@ -147,7 +150,7 @@ static void processEvents(uint8_t chip, uint8_t ch, bool nowPressed) {
 }
 
 // ──────────────────────────────────────────────────────────
-// update() — 扫描所有 16 路 × 3 芯片（~2ms 完成一轮）
+// update() — 扫描所有 16 路 × NUM_HC4067 颗芯片（~2ms 完成一轮）
 // ──────────────────────────────────────────────────────────
 void update() {
     for (uint8_t ch = 0; ch < NUM_CHANNELS; ch++) {

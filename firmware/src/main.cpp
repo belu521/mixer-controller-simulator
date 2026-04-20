@@ -118,7 +118,7 @@ void setup() {
 // loop()
 // ──────────────────────────────────────────────────────────
 void loop() {
-    HC4067Scanner::update();    // 扫描 3 颗 HC4067（约 2ms/轮）
+    HC4067Scanner::update();    // 扫描 2 颗 HC4067（约 2ms/轮）
     EncoderInput::update();     // 轮询 5 路编码器
     FaderDriver::update();      // ADC 采样 + 电机闭环（限速 1ms）
     ButtonInput::update();      // 空轮询（回调已由 HC4067Scanner 触发）
